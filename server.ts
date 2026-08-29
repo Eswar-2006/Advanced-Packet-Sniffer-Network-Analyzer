@@ -145,6 +145,141 @@ function getProtocolName(protoNum: string): string {
   }
 }
 
+// ─── Central Packet Ingest Engine (Feeds RingBuffer, Connections, DNS & Top Sites) ───
+function ingestLivePacket(
+  packet: Packet,
+  extra?: {
+    dnsQuery?: string;
+    dnsAnswer?: string;
+    tlsSni?: string;
+    httpHost?: string;
+    httpMethod?: string;
+    httpUri?: string;
+  }
+) {
+  const now = new Date().toISOString();
+  const frameLen = packet.size || 64;
+
+  // 1. Add to packet ring buffer
+  packetRingBuffer.unshift(packet);
+  if (packetRingBuffer.length > MAX_PACKETS_BUFFER) packetRingBuffer.pop();
+
+  // 2. Throughput counters
+  totalPacketsCaptured++;
+  packetsInLastSec++;
+  if (packet.direction === 'INCOMING') {
+    incomingBytesCount += frameLen;
+  } else {
+    outgoingBytesCount += frameLen;
+  }
+
+  // 3. DNS Cache & Query Tracking
+  let dnsQuery = extra?.dnsQuery;
+  let dnsAnswer = extra?.dnsAnswer;
+  if (!dnsQuery && packet.protocol === 'DNS') {
+    const match = packet.summary.match(/(?:query|response)\s+(?:0x[a-f0-9]+\s+)?(?:A|AAAA|CNAME|TXT|MX|PTR)?\s*([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i);
+    if (match) dnsQuery = match[1];
+    const ansMatch = packet.summary.match(/(?:response|is at|A)\s+([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})/i);
+    if (ansMatch) dnsAnswer = ansMatch[1];
+  } else if (!dnsQuery && (packet.dstPort === 53 || packet.srcPort === 53)) {
+    const match = packet.summary.match(/([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
+    if (match) dnsQuery = match[1];
+  }
+
+  if (dnsQuery) {
+    const existingDns = dnsCache.get(dnsQuery);
+    if (existingDns) {
+      existingDns.lastSeen = now;
+      existingDns.count++;
+      if (dnsAnswer) existingDns.ip = dnsAnswer;
+    } else {
+      dnsCache.set(dnsQuery, {
+        name: dnsQuery,
+        ip: dnsAnswer || (packet.dstIp !== '8.8.8.8' && packet.dstIp !== '1.1.1.1' ? packet.dstIp : undefined),
+        firstSeen: now,
+        lastSeen: now,
+        count: 1
+      });
+    }
+    if (dnsAnswer) ipToHostname.set(dnsAnswer, dnsQuery);
+  }
+
+  // 4. Visited Websites Tracking (TLS SNI / HTTP Host / Hostname)
+  let visitedHost = extra?.tlsSni || extra?.httpHost || packet.hostname;
+  if (!visitedHost) {
+    if (packet.protocol === 'HTTPS' || packet.protocol === 'TLS' || packet.dstPort === 443 || packet.srcPort === 443) {
+      visitedHost = ipToHostname.get(packet.dstIp) || ipToHostname.get(packet.srcIp);
+      if (!visitedHost && packet.summary.includes('.')) {
+        const match = packet.summary.match(/([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
+        if (match && !match[1].match(/^\d+\.\d+\.\d+\.\d+$/)) visitedHost = match[1];
+      }
+    } else if (packet.protocol === 'HTTP' || packet.dstPort === 80 || packet.srcPort === 80) {
+      const match = packet.summary.match(/(?:GET|POST|HEAD)\s+[^\s]+\s+(?:HTTP\/\d\.\d)?\s*([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})?/i);
+      if (match && match[1]) visitedHost = match[1];
+      else visitedHost = ipToHostname.get(packet.dstIp);
+    }
+  }
+
+  if (visitedHost && !visitedHost.match(/^\d+\.\d+\.\d+\.\d+$/)) {
+    const existingSite = topSites.get(visitedHost);
+    if (existingSite) {
+      existingSite.bytes += frameLen;
+      existingSite.packets += 1;
+      existingSite.lastSeen = now;
+    } else {
+      topSites.set(visitedHost, {
+        host: visitedHost,
+        bytes: frameLen,
+        packets: 1,
+        lastSeen: now
+      });
+    }
+  }
+
+  // 5. Live 4-Tuple Connections Table
+  if (packet.srcIp && packet.dstIp) {
+    const proto = packet.service || packet.protocol || 'TCP';
+    const connKey = `${packet.srcIp}:${packet.srcPort || 0}-${packet.dstIp}:${packet.dstPort || 0}-${proto}`;
+    const existingConn = liveConnections.get(connKey);
+    const resolvedHost = visitedHost || packet.hostname || ipToHostname.get(packet.dstIp) || packet.dstIp;
+
+    if (existingConn) {
+      existingConn.bytes += frameLen;
+      existingConn.packets += 1;
+      existingConn.lastSeen = now;
+      if (resolvedHost) existingConn.hostname = resolvedHost;
+      if (extra?.tlsSni) existingConn.tlsSni = extra.tlsSni;
+      if (extra?.httpHost) existingConn.httpHost = extra.httpHost;
+      if (extra?.httpMethod) existingConn.httpMethod = extra.httpMethod;
+      if (extra?.httpUri) existingConn.httpUri = extra.httpUri;
+    } else {
+      if (liveConnections.size >= MAX_CONNECTIONS) {
+        const firstKey = liveConnections.keys().next().value;
+        if (firstKey) liveConnections.delete(firstKey);
+      }
+      liveConnections.set(connKey, {
+        key: connKey,
+        srcIp: packet.srcIp,
+        srcPort: packet.srcPort || 0,
+        dstIp: packet.dstIp,
+        dstPort: packet.dstPort || 0,
+        protocol: proto,
+        hostname: resolvedHost,
+        service: packet.appProtocol || proto,
+        bytes: frameLen,
+        packets: 1,
+        firstSeen: now,
+        lastSeen: now,
+        direction: packet.direction,
+        tlsSni: extra?.tlsSni,
+        httpHost: extra?.httpHost,
+        httpMethod: extra?.httpMethod,
+        httpUri: extra?.httpUri
+      });
+    }
+  }
+}
+
 // Resolve tshark binary — full path for Windows, plain name for Unix
 const TSHARK_BIN = process.platform === 'win32'
   ? 'C:\\Program Files\\Wireshark\\tshark.exe'
@@ -274,35 +409,6 @@ function startTsharkCapture(interfaceName?: string) {
       else if (dstPort === 25 || srcPort === 25) appProto = "SMTP";
       else if (dstPort === 3389 || srcPort === 3389) appProto = "RDP";
 
-      // ── DNS: update resolution cache ──
-      if (dnsQuery) {
-        const now = new Date().toISOString();
-        const existing = dnsCache.get(dnsQuery);
-        if (existing) {
-          existing.lastSeen = now;
-          existing.count++;
-          if (dnsAnswer) existing.ip = dnsAnswer;
-        } else {
-          dnsCache.set(dnsQuery, { name: dnsQuery, ip: dnsAnswer || undefined, firstSeen: now, lastSeen: now, count: 1 });
-        }
-        // Map resolved IP back to hostname
-        if (dnsAnswer && dnsQuery) ipToHostname.set(dnsAnswer, dnsQuery);
-      }
-
-      // ── TLS SNI / HTTP host → top sites tracking ──
-      const visitedHost = tlsSni || httpHost;
-      if (visitedHost) {
-        const now = new Date().toISOString();
-        const existing = topSites.get(visitedHost);
-        if (existing) {
-          existing.bytes   += frameLen;
-          existing.packets += 1;
-          existing.lastSeen = now;
-        } else {
-          topSites.set(visitedHost, { host: visitedHost, bytes: frameLen, packets: 1, lastSeen: now });
-        }
-      }
-
       // ── Resolve hostname from DNS cache ──
       const remoteIp = srcIp.startsWith('192.168') || srcIp.startsWith('10.') ? dstIp : srcIp;
       const resolvedHostname = ipToHostname.get(remoteIp) || tlsSni || httpHost || "";
@@ -363,55 +469,15 @@ function startTsharkCapture(interfaceName?: string) {
         blocked:     isBlocked
       };
 
-      // ── Add to packet ring buffer ──
-      packetRingBuffer.unshift(packet);
-      if (packetRingBuffer.length > MAX_PACKETS_BUFFER) packetRingBuffer.pop();
-
-      // ── Update live connection tracker ──
-      if (srcIp && dstIp) {
-        const connKey = `${srcIp}:${srcPort||0}-${dstIp}:${dstPort||0}-${appProto}`;
-        const now = new Date().toISOString();
-        const existing = liveConnections.get(connKey);
-        if (existing) {
-          existing.bytes   += frameLen;
-          existing.packets += 1;
-          existing.lastSeen = now;
-          if (tlsSni)   existing.tlsSni   = tlsSni;
-          if (httpHost) existing.httpHost  = httpHost;
-          if (httpMethod) existing.httpMethod = httpMethod;
-          if (httpUri)  existing.httpUri   = httpUri;
-          if (resolvedHostname) existing.hostname = resolvedHostname;
-        } else {
-          if (liveConnections.size >= MAX_CONNECTIONS) {
-            // evict oldest entry
-            const firstKey = liveConnections.keys().next().value;
-            if (firstKey) liveConnections.delete(firstKey);
-          }
-          liveConnections.set(connKey, {
-            key: connKey, srcIp, srcPort: srcPort || 0,
-            dstIp, dstPort: dstPort || 0,
-            protocol: appProto,
-            hostname: resolvedHostname || dstIp,
-            service:  appProto,
-            bytes:    frameLen,
-            packets:  1,
-            firstSeen: now, lastSeen: now,
-            direction,
-            tlsSni:     tlsSni   || undefined,
-            httpHost:   httpHost  || undefined,
-            httpMethod: httpMethod|| undefined,
-            httpUri:    httpUri   || undefined,
-          });
-        }
-      }
-
-      // ── Counters ──
-      totalPacketsCaptured++;
-      packetsInLastSec++;
-      if (direction === 'INCOMING') incomingBytesCount += frameLen;
-      else outgoingBytesCount += frameLen;
-
-
+      // Feed into unified ingest pipeline
+      ingestLivePacket(packet, {
+        dnsQuery,
+        dnsAnswer,
+        tlsSni,
+        httpHost,
+        httpMethod,
+        httpUri
+      });
     }
   });
 
@@ -430,66 +496,57 @@ function startTsharkCapture(interfaceName?: string) {
 }
 
 // ───── Real-Time Packet Simulator (fallback when tshark is unavailable) ─────
-const SIM_PROTOCOLS = ['TCP', 'UDP', 'ICMP', 'HTTPS', 'DNS', 'HTTP', 'ARP', 'TLS'];
-const SIM_IPS_SRC = [
-  '192.168.1.15', '192.168.1.104', '10.0.0.22', '185.190.140.22',
-  '8.8.8.8', '104.244.42.1', '52.206.14.3', '172.16.0.5',
-  '198.51.100.44', '203.0.113.7', '1.1.1.1', '77.88.8.8'
+const SIM_SERVICES = [
+  { proto: 'HTTPS', port: 443, host: 'sentinel-analytica.onrender.com', ip: '10.26.247.161' },
+  { proto: 'HTTPS', port: 443, host: 'api.render.com', ip: '216.24.57.1' },
+  { proto: 'HTTPS', port: 443, host: 'github.com', ip: '140.82.121.4' },
+  { proto: 'HTTPS', port: 443, host: 'google.com', ip: '172.217.22.46' },
+  { proto: 'HTTPS', port: 443, host: 'cloudflare.com', ip: '104.16.132.229' },
+  { proto: 'HTTPS', port: 443, host: 'openai.com', ip: '104.18.2.161' },
+  { proto: 'DNS',   port: 53,  host: 'sentinel-analytica.onrender.com', ip: '8.8.8.8' },
+  { proto: 'DNS',   port: 53,  host: 'api.github.com', ip: '1.1.1.1' },
+  { proto: 'HTTP',  port: 80,  host: 'connectivitycheck.gstatic.com', ip: '142.250.80.46' },
+  { proto: 'TCP',   port: 22,  host: 'ssh.cloudnode.internal', ip: '185.190.140.22' },
+  { proto: 'TLS',   port: 8443, host: 'telemetry.sentinel.io', ip: '52.206.14.3' }
 ];
-const SIM_IPS_DST = [
-  '192.168.1.1', '8.8.8.8', '1.1.1.1', '192.168.1.15',
-  '104.244.42.1', '52.206.14.3', '185.190.140.22', '10.0.0.1',
-  '172.217.22.46', '151.101.65.140', '93.184.216.34'
-];
-const SIM_PORTS_COMMON = [80, 443, 53, 22, 8080, 3306, 5432, 25, 587, 993, 3389, 1194, 8443, 4444];
+
+const SIM_IPS_CLIENT = ['192.168.1.104', '10.0.0.22', '172.16.0.5', '192.168.1.15'];
 const SIM_MAC = () => Array.from({length: 6}, () => Math.floor(Math.random() * 256).toString(16).padStart(2,'0')).join(':');
-const SIM_SUMMARIES: Record<string, string[]> = {
-  TCP:   ['TCP [SYN] Seq={seq} Win=65535 Len=0', 'TCP [SYN,ACK] Seq={seq} Ack={ack}', 'TCP [ACK] Seq={seq}', 'TCP [FIN,ACK]'],
-  UDP:   ['UDP Datagram Len={len}', 'UDP [Data] Src={sport} Dst={dport}'],
-  HTTPS: ['TLS Application Data (Encrypted)', 'TLS Client Hello', 'TLS Server Hello', 'TLS Change Cipher Spec'],
-  DNS:   ['Standard query 0x{hex} A google.com', 'DNS response A 142.250.80.46', 'Standard query AAAA cloudflare.com'],
-  HTTP:  ['GET /api/v2/status HTTP/1.1', 'POST /login HTTP/1.1', 'HTTP/1.1 200 OK', 'GET /assets/main.js HTTP/1.1'],
-  ICMP:  ['Echo (ping) request id={id} seq={seq}', 'Echo (ping) reply id={id} seq={seq}', 'Destination Unreachable'],
-  ARP:   ['ARP Reply: {ip} is at {mac}', 'ARP Request: Who has {ip}?'],
-  TLS:   ['TLS Application Data (Encrypted payload)', 'TLS Record Layer: Handshake']
-};
 
 function pickRandom<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
 function generateSimulatedPacket(): Packet {
-  const protocol = pickRandom(SIM_PROTOCOLS);
-  const srcIp = pickRandom(SIM_IPS_SRC);
-  const dstIp = pickRandom(SIM_IPS_DST);
-  const srcPort = pickRandom(SIM_PORTS_COMMON) + Math.floor(Math.random() * 50000);
-  const dstPort = pickRandom(SIM_PORTS_COMMON);
-  const frameLen = Math.floor(Math.random() * 1400) + 60;
-  const ttl = [64, 128, 255][Math.floor(Math.random() * 3)];
+  const service = pickRandom(SIM_SERVICES);
+  const isOutgoing = Math.random() > 0.4;
+  const clientIp = pickRandom(SIM_IPS_CLIENT);
+  const serverIp = service.ip;
+
+  const srcIp = isOutgoing ? clientIp : serverIp;
+  const dstIp = isOutgoing ? serverIp : clientIp;
+  const srcPort = isOutgoing ? (Math.floor(Math.random() * 40000) + 10000) : service.port;
+  const dstPort = isOutgoing ? service.port : (Math.floor(Math.random() * 40000) + 10000);
+
+  const frameLen = Math.floor(Math.random() * 1200) + 70;
+  const ttl = isOutgoing ? 64 : 128;
   const macSrc = SIM_MAC();
   const macDst = SIM_MAC();
-  const epoch = Date.now() / 1000;
-  const timestamp = new Date(epoch * 1000).toISOString();
-  const rawSeq = Math.floor(Math.random() * 1e9);
-  const rawAck = Math.floor(Math.random() * 1e9);
+  const timestamp = new Date().toISOString();
 
-  let direction: 'INCOMING' | 'OUTGOING' | 'LOOPBACK' = 'INCOMING';
-  if (srcIp === '127.0.0.1' || dstIp === '127.0.0.1') direction = 'LOOPBACK';
-  else if (srcIp.startsWith('192.168') || srcIp.startsWith('10.') || srcIp.startsWith('172.16')) direction = 'OUTGOING';
+  let direction: 'INCOMING' | 'OUTGOING' | 'LOOPBACK' = isOutgoing ? 'OUTGOING' : 'INCOMING';
 
   const isBlocked = blockedIps.has(srcIp) || blockedIps.has(dstIp);
 
-  const summaryTemplates = SIM_SUMMARIES[protocol] || ['Packet'];
-  let summary = pickRandom(summaryTemplates)
-    .replace('{seq}', String(rawSeq))
-    .replace('{ack}', String(rawAck))
-    .replace('{len}', String(frameLen - 28))
-    .replace('{sport}', String(srcPort))
-    .replace('{dport}', String(dstPort))
-    .replace('{hex}', Math.floor(Math.random() * 0xffff).toString(16).padStart(4, '0'))
-    .replace('{id}', String(Math.floor(Math.random() * 0xffff)))
-    .replace('{ip}', srcIp)
-    .replace('{mac}', macSrc);
+  let summary = `${service.proto} ${srcIp}:${srcPort} → ${dstIp}:${dstPort}`;
+  if (service.proto === 'DNS') {
+    summary = `[DNS] Standard query A ${service.host} → ${serverIp}`;
+  } else if (service.proto === 'HTTPS' || service.proto === 'TLS') {
+    summary = `[TLS] SNI: ${service.host} | Application Data (${frameLen} bytes)`;
+  } else if (service.proto === 'HTTP') {
+    summary = `[HTTP] GET /api/v1/health HTTP/1.1 (${service.host})`;
+  }
+
   if (isBlocked) summary = `[FIREWALL BLOCKED] ${summary}`;
 
   const rawPayloadSize = Math.max(0, frameLen - 54);
@@ -503,7 +560,7 @@ function generateSimulatedPacket(): Packet {
   const packet: Packet = {
     id: nextPacketId++,
     timestamp,
-    protocol,
+    protocol: service.proto,
     srcIp,
     dstIp,
     srcPort,
@@ -515,6 +572,9 @@ function generateSimulatedPacket(): Packet {
     checksum: `0x${Math.floor(Math.random() * 0xffff).toString(16).padStart(4, '0')}`,
     payloadSize: rawPayloadSize,
     direction,
+    hostname: service.host,
+    service: service.proto,
+    appProtocol: `${service.proto}: ${service.host}`,
     interface: 'sim0',
     summary,
     payloadHex,
@@ -531,32 +591,20 @@ function startSimulator() {
   console.log('[SIMULATOR] tshark unavailable — starting built-in real-time packet simulator...');
   isCapturing = true;
 
-  // Burst initial packets so UI has data immediately
-  for (let i = 0; i < 20; i++) {
+  // Burst initial packets so UI has rich connections, DNS, and site data immediately
+  for (let i = 0; i < 25; i++) {
     const p = generateSimulatedPacket();
-    packetRingBuffer.unshift(p);
-    if (packetRingBuffer.length > MAX_PACKETS_BUFFER) packetRingBuffer.pop();
-    totalPacketsCaptured++;
-    packetsInLastSec++;
-    if (p.direction === 'INCOMING') incomingBytesCount += p.size;
-    else outgoingBytesCount += p.size;
+    ingestLivePacket(p);
   }
 
-  // Generate 2–6 packets every 600ms for continuous real-time feel
+  // Generate continuous live packets every 500ms
   simulatorInterval = setInterval(() => {
-    const count = Math.floor(Math.random() * 5) + 2;
+    const count = Math.floor(Math.random() * 4) + 2;
     for (let i = 0; i < count; i++) {
       const p = generateSimulatedPacket();
-      packetRingBuffer.unshift(p);
-      if (packetRingBuffer.length > MAX_PACKETS_BUFFER) packetRingBuffer.pop();
-      totalPacketsCaptured++;
-      packetsInLastSec++;
-      if (p.direction === 'INCOMING') incomingBytesCount += p.size;
-      else outgoingBytesCount += p.size;
-
-
+      ingestLivePacket(p);
     }
-  }, 600);
+  }, 500);
 }
 
 function stopSimulator() {
@@ -608,49 +656,7 @@ function getBaseUrl(req: express.Request): string {
 
 // Ingest remote packet streams from agents into central dashboard ring buffer & stats
 agentManager.onPacket((agentId: string, packet: Packet) => {
-  packetRingBuffer.unshift(packet);
-  if (packetRingBuffer.length > MAX_PACKETS_BUFFER) packetRingBuffer.pop();
-
-  totalPacketsCaptured++;
-  const frameLen = packet.size || 0;
-  if (packet.direction === 'INCOMING') {
-    incomingBytesCount += frameLen;
-  } else {
-    outgoingBytesCount += frameLen;
-  }
-
-  // Update live connection tracker
-  if (packet.srcIp && packet.dstIp) {
-    const connKey = `${packet.srcIp}:${packet.srcPort || 0}-${packet.dstIp}:${packet.dstPort || 0}-${packet.protocol}`;
-    const now = new Date().toISOString();
-    const existing = liveConnections.get(connKey);
-    if (existing) {
-      existing.bytes += frameLen;
-      existing.packets += 1;
-      existing.lastSeen = now;
-      if (packet.hostname) existing.hostname = packet.hostname;
-    } else {
-      if (liveConnections.size >= MAX_CONNECTIONS) {
-        const firstKey = liveConnections.keys().next().value;
-        if (firstKey) liveConnections.delete(firstKey);
-      }
-      liveConnections.set(connKey, {
-        key: connKey,
-        srcIp: packet.srcIp,
-        srcPort: packet.srcPort || 0,
-        dstIp: packet.dstIp,
-        dstPort: packet.dstPort || 0,
-        protocol: packet.protocol,
-        hostname: packet.hostname || packet.dstIp,
-        service: packet.protocol,
-        bytes: frameLen,
-        packets: 1,
-        firstSeen: now,
-        lastSeen: now,
-        direction: packet.direction
-      });
-    }
-  }
+  ingestLivePacket(packet);
 });
 
 // Step 1: Create a secure, one-time registration token for adding a new capture device
@@ -952,31 +958,9 @@ app.post("/api/simulate-attack", (req, res) => {
   const result = generateAttackPackets(attackType, targetIp, attackerIp, nextPacketId);
   nextPacketId += result.packets.length + 5;
 
-  // Prepend generated attack packets to live packet ring buffer
+  // Ingest generated attack packets to live packet ring buffer and traffic intel
   result.packets.forEach(p => {
-    packetRingBuffer.unshift(p);
-    totalPacketsCaptured++;
-    if (p.direction === "INCOMING") incomingBytesCount += p.size;
-    else outgoingBytesCount += p.size;
-
-    // Track in live connections
-    const connKey = `${p.srcIp}:${p.srcPort || 0}-${p.dstIp}:${p.dstPort || 0}-${p.protocol}`;
-    const now = new Date().toISOString();
-    liveConnections.set(connKey, {
-      key: connKey,
-      srcIp: p.srcIp,
-      srcPort: p.srcPort || 0,
-      dstIp: p.dstIp,
-      dstPort: p.dstPort || 0,
-      protocol: p.protocol,
-      hostname: p.dstIp,
-      service: p.protocol,
-      bytes: p.size,
-      packets: 1,
-      firstSeen: now,
-      lastSeen: now,
-      direction: p.direction
-    });
+    ingestLivePacket(p);
   });
 
   if (packetRingBuffer.length > MAX_PACKETS_BUFFER) {
