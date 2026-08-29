@@ -76,108 +76,80 @@ export function filterPackets(packets: Packet[], filters: SnifferFilter): Packet
 // Conservative anomaly & threat detection engine based on actual observed network metadata
 export function runSecurityAnalysis(packets: Packet[]): SecurityAlert[] {
   const alerts: SecurityAlert[] = [];
-  
-  // Track statistics for detecting high-frequency activities (scanning, sweeps)
-  const ipPortMap: { [ip: string]: { ports: Set<number>, times: number[], dstIps: Set<string> } } = {};
-  const ipPacketCount: { [ip: string]: number } = {};
-  const arpCount: { [ip: string]: number } = {};
+  const seenAlertKeys = new Set<string>();
+
+  // Track inbound port probes (SYN packets hitting distinct server ports)
+  const probeMap: { [ip: string]: { ports: Set<number>, timestamp: string, dstIp: string } } = {};
 
   packets.forEach((p, idx) => {
-    // Count packets per source IP for burst detection
-    ipPacketCount[p.srcIp] = (ipPacketCount[p.srcIp] || 0) + 1;
-
-    // Port Scanning Heuristics (TCP/UDP with valid ports)
-    if ((p.protocol === 'TCP' || p.protocol === 'UDP') && p.dstPort && p.srcIp) {
-      if (!ipPortMap[p.srcIp]) {
-        ipPortMap[p.srcIp] = { ports: new Set<number>(), times: [], dstIps: new Set<string>() };
+    // 1. Tagged Attack Packets (from IDS Attack Simulator)
+    if (p.tagged) {
+      const alertKey = `tagged_${p.tagged}_${p.srcIp}`;
+      if (!seenAlertKeys.has(alertKey)) {
+        seenAlertKeys.add(alertKey);
+        alerts.push({
+          id: `alert_${p.tagged.toLowerCase()}_${p.id}`,
+          timestamp: p.timestamp,
+          severity: p.tagged === 'SQL_INJECTION' || p.tagged === 'SYN_FLOOD' ? 'CRITICAL' : 'HIGH',
+          type: p.tagged.replace(/_/g, ' '),
+          source: p.srcIp,
+          destination: `${p.dstIp}:${p.dstPort || '?'}` ,
+          message: p.summary,
+          packetId: p.id,
+          resolved: false
+        });
       }
-      ipPortMap[p.srcIp].ports.add(p.dstPort);
-      ipPortMap[p.srcIp].dstIps.add(p.dstIp);
-      ipPortMap[p.srcIp].times.push(new Date(p.timestamp).getTime());
     }
 
-    // Malformed / Suspicious TCP Flag Combinations (e.g. SYN+FIN or NULL scan)
+    // 2. Real Inbound Port Scan Probes (Incoming TCP SYN without ACK)
+    if (p.direction === 'INCOMING' && p.protocol === 'TCP' && p.tcpFlags?.includes('SYN') && !p.tcpFlags?.includes('ACK') && p.dstPort) {
+      if (!probeMap[p.srcIp]) {
+        probeMap[p.srcIp] = { ports: new Set<number>(), timestamp: p.timestamp, dstIp: p.dstIp };
+      }
+      probeMap[p.srcIp].ports.add(p.dstPort);
+    }
+
+    // 3. Conflicting TCP Flags (SYN+FIN)
     if (p.protocol === 'TCP' && p.tcpFlags) {
       const flags = p.tcpFlags.toUpperCase();
       if (flags.includes('SYN') && flags.includes('FIN')) {
-        alerts.push({
-          id: `det_syn_fin_${p.id || idx}`,
-          timestamp: p.timestamp,
-          severity: 'MEDIUM',
-          type: 'Suspicious TCP Flag Combination',
-          source: p.srcIp,
-          destination: `${p.dstIp}:${p.dstPort || '?'}` ,
-          message: `Conflicting TCP flags (SYN+FIN) observed in packet #${p.id}. May indicate host OS fingerprinting or non-standard TCP stack implementation.`,
-          packetId: p.id,
-          resolved: false
-        });
-      }
-    }
-
-    // DNS Tunneling / Covert Exfiltration Indicators
-    if (p.protocol === 'DNS' && (p.size > 512 || (p.summary && p.summary.length > 120))) {
-      alerts.push({
-        id: `det_dns_anomaly_${p.id || idx}`,
-        timestamp: p.timestamp,
-        severity: 'MEDIUM',
-        type: 'Anomalous DNS Query Size',
-        source: p.srcIp,
-        destination: `${p.dstIp}:53`,
-        message: `Unusually large DNS frame (${p.size} bytes) observed in packet #${p.id}. Pattern may suggest large DNS TXT resolution or potential covert channel.`,
-        packetId: p.id,
-        resolved: false
-      });
-    }
-
-    // ARP Rate Anomaly
-    if (p.protocol === 'ARP') {
-      arpCount[p.srcIp] = (arpCount[p.srcIp] || 0) + 1;
-      if (arpCount[p.srcIp] >= 20) {
-        alerts.push({
-          id: `det_arp_freq_${p.srcIp}`,
-          timestamp: p.timestamp,
-          severity: 'LOW',
-          type: 'High ARP Activity',
-          source: p.srcIp,
-          destination: p.dstIp || 'Broadcast',
-          message: `High frequency of ARP frames (${arpCount[p.srcIp]} packets) observed from ${p.srcIp}. Common during network topology changes, gateway discovery, or ARP storms.`,
-          packetId: p.id,
-          resolved: false
-        });
+        const alertKey = `flag_syn_fin_${p.srcIp}`;
+        if (!seenAlertKeys.has(alertKey)) {
+          seenAlertKeys.add(alertKey);
+          alerts.push({
+            id: `det_syn_fin_${p.id}`,
+            timestamp: p.timestamp,
+            severity: 'MEDIUM',
+            type: 'Suspicious TCP Flags',
+            source: p.srcIp,
+            destination: `${p.dstIp}:${p.dstPort || '?'}` ,
+            message: `Conflicting TCP flags (SYN+FIN) observed in packet #${p.id}. Pattern may indicate active host OS fingerprinting probe.`,
+            packetId: p.id,
+            resolved: false
+          });
+        }
       }
     }
   });
 
-  // Conservative Port Scan Detection (requiring at least 8 distinct target ports)
-  Object.keys(ipPortMap).forEach(ip => {
-    const data = ipPortMap[ip];
+  // Evaluate legitimate Port Scan Probes (only when >= 8 distinct destination ports are contacted with SYN)
+  Object.keys(probeMap).forEach(ip => {
+    const data = probeMap[ip];
     if (data.ports.size >= 8) {
-      alerts.push({
-        id: `det_scan_${ip}`,
-        timestamp: new Date().toISOString(),
-        severity: 'HIGH',
-        type: 'Potential Port Scan',
-        source: ip,
-        destination: Array.from(data.dstIps).slice(0, 3).join(', ') + (data.dstIps.size > 3 ? '...' : ''),
-        message: `Host ${ip} contacted ${data.ports.size} distinct destination ports within the captured window. Pattern is consistent with automated port discovery or vulnerability probing.`,
-        resolved: false
-      });
-    }
-  });
-
-  // Rapid Connection Burst Detection
-  Object.keys(ipPacketCount).forEach(ip => {
-    if (ipPacketCount[ip] >= 60 && !ip.startsWith('127.')) {
-      alerts.push({
-        id: `det_burst_${ip}`,
-        timestamp: new Date().toISOString(),
-        severity: 'LOW',
-        type: 'Abnormal Traffic Burst',
-        source: ip,
-        destination: 'Multiple',
-        message: `Rapid connection burst (${ipPacketCount[ip]} packets) observed from source ${ip}. Verify whether this is expected file transfer or high-frequency polling activity.`,
-        resolved: false
-      });
+      const alertKey = `scan_${ip}`;
+      if (!seenAlertKeys.has(alertKey)) {
+        seenAlertKeys.add(alertKey);
+        alerts.push({
+          id: `det_scan_${ip.replace(/\./g, '_')}`,
+          timestamp: data.timestamp,
+          severity: 'HIGH',
+          type: 'Potential Port Scan',
+          source: ip,
+          destination: data.dstIp,
+          message: `Inbound host ${ip} probed ${data.ports.size} distinct destination ports with TCP SYN frames. Consistent with network reconnaissance.`,
+          resolved: false
+        });
+      }
     }
   });
 

@@ -525,8 +525,9 @@ function generateSimulatedPacket(): Packet {
 
   const srcIp = isOutgoing ? clientIp : serverIp;
   const dstIp = isOutgoing ? serverIp : clientIp;
-  const srcPort = isOutgoing ? (Math.floor(Math.random() * 40000) + 10000) : service.port;
-  const dstPort = isOutgoing ? service.port : (Math.floor(Math.random() * 40000) + 10000);
+  const clientPort = 51000 + (parseInt(clientIp.split('.').pop() || '1') * 10);
+  const srcPort = isOutgoing ? clientPort : service.port;
+  const dstPort = isOutgoing ? service.port : clientPort;
 
   const frameLen = Math.floor(Math.random() * 1200) + 70;
   const ttl = isOutgoing ? 64 : 128;
@@ -615,7 +616,7 @@ function stopSimulator() {
     simulatorInterval = null;
   }
   demoMode = false;
-  isCapturing = activeSnifferProcess !== null;
+  isCapturing = false;
   console.log('[PACKET ENGINE] Stopped.');
 }
 
@@ -627,7 +628,7 @@ setInterval(() => {
   const now = Date.now();
   const diffSec = (now - lastStatsTime) / 1000;
   if (diffSec > 0) {
-    currentPacketsPerSec = Math.round(packetsInLastSec / diffSec);
+    currentPacketsPerSec = isCapturing ? Math.round(packetsInLastSec / diffSec) : 0;
     packetsInLastSec = 0;
     lastStatsTime = now;
   }
@@ -638,9 +639,9 @@ setInterval(() => {
 // Status endpoint (Ensures active capture telemetry in LIVE mode)
 app.get("/api/status", (req, res) => {
   res.json({
-    isCapturing: true,
+    isCapturing,
     totalPacketsCaptured,
-    packetsPerSec: currentPacketsPerSec,
+    packetsPerSec: isCapturing ? currentPacketsPerSec : 0,
     bufferSize: packetRingBuffer.length,
     usingSimulator: demoMode,
     captureMode: demoMode ? "SIMULATED" : "REAL",

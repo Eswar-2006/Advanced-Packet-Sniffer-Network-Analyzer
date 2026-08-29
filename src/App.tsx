@@ -475,7 +475,8 @@ export default function App() {
     setStats(prev => ({
       ...prev,
       isCapturing: nextCapturing,
-      interfaceStatus: nextCapturing ? 'ACTIVE' : 'IDLE'
+      interfaceStatus: nextCapturing ? 'ACTIVE' : 'IDLE',
+      packetsPerSec: nextCapturing ? prev.packetsPerSec : 0
     }));
 
     try {
@@ -483,13 +484,26 @@ export default function App() {
         await fetch('/api/start-sniffing', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ interfaceName: 'any' })
+          body: JSON.stringify({ interfaceName: selectedInterfaceId || captureInterface || 'any' })
         });
+        if (selectedAgentId && selectedAgentId !== 'agent-local') {
+          await fetch(`/api/agents/${selectedAgentId}/start-sniffing`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ interfaceId: selectedInterfaceId })
+          });
+        }
       } else {
         await fetch('/api/stop-sniffing', {
           method: 'POST'
         });
+        if (selectedAgentId && selectedAgentId !== 'agent-local') {
+          await fetch(`/api/agents/${selectedAgentId}/stop-sniffing`, {
+            method: 'POST'
+          });
+        }
       }
+      fetchAgents();
     } catch (err) {
       console.error("Failed to sync capture toggle with backend:", err);
     }
