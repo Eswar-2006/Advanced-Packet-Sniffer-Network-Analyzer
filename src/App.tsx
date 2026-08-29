@@ -266,6 +266,7 @@ export default function App() {
 
   const handleStartMonitoring = async (agentId: string, interfaceId: string) => {
     try {
+      setStats(prev => ({ ...prev, isCapturing: true, interfaceStatus: 'ACTIVE' }));
       const res = await fetch(`/api/agents/${agentId}/start-sniffing`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -275,7 +276,6 @@ export default function App() {
       if (data.mode) {
         setCaptureMode(data.mode);
       }
-      setStats(prev => ({ ...prev, isCapturing: true, interfaceStatus: 'ACTIVE' }));
       fetchAgents();
     } catch (err) {
       console.error("Failed to start monitoring:", err);
@@ -284,8 +284,9 @@ export default function App() {
 
   const handleStopMonitoring = async (agentId: string) => {
     try {
+      setStats(prev => ({ ...prev, isCapturing: false, interfaceStatus: 'IDLE', packetsPerSec: 0 }));
       await fetch(`/api/agents/${agentId}/stop-sniffing`, { method: 'POST' });
-      setStats(prev => ({ ...prev, isCapturing: false, interfaceStatus: 'IDLE' }));
+      await fetch('/api/stop-sniffing', { method: 'POST' });
       fetchAgents();
     } catch (err) {
       console.error("Failed to stop monitoring:", err);
@@ -405,22 +406,25 @@ export default function App() {
             setCaptureMode(packetsData.stats.usingSimulator ? 'SIMULATED' : 'REAL');
           }
 
-          setStats(prev => ({
-            ...prev,
-            isCapturing: true,
-            interfaceStatus: 'ACTIVE',
-            totalPackets:    packetsData.stats?.totalPacketsCaptured ?? packetsData.packets.length,
-            packetsPerSec:   packetsData.stats?.packetsPerSec || 0,
-            incomingBytes:   packetsData.stats?.incomingBytes || 0,
-            outgoingBytes:   packetsData.stats?.outgoingBytes || 0,
-            cpuUsage:        statsData.cpuUsage        || prev.cpuUsage,
-            memoryUsage:     statsData.memoryUsage     || prev.memoryUsage,
-            diskUsage:       statsData.diskUsage       || prev.diskUsage,
-            activeConnections: connsData.total         || prev.activeConnections,
-            threatCounter:   computedAlerts.length,
-            alertCounter:    computedAlerts.length,
-            networkHealthScore: Math.max(25, 100 - computedAlerts.length * 15)
-          }));
+          setStats(prev => {
+            const serverCapturing = packetsData.stats?.isCapturing ?? prev.isCapturing;
+            return {
+              ...prev,
+              isCapturing: serverCapturing,
+              interfaceStatus: serverCapturing ? 'ACTIVE' : 'IDLE',
+              totalPackets:    packetsData.stats?.totalPacketsCaptured ?? packetsData.packets.length,
+              packetsPerSec:   serverCapturing ? (packetsData.stats?.packetsPerSec || 0) : 0,
+              incomingBytes:   packetsData.stats?.incomingBytes || 0,
+              outgoingBytes:   packetsData.stats?.outgoingBytes || 0,
+              cpuUsage:        statsData.cpuUsage        || prev.cpuUsage,
+              memoryUsage:     statsData.memoryUsage     || prev.memoryUsage,
+              diskUsage:       statsData.diskUsage       || prev.diskUsage,
+              activeConnections: connsData.total         || prev.activeConnections,
+              threatCounter:   computedAlerts.length,
+              alertCounter:    computedAlerts.length,
+              networkHealthScore: Math.max(25, 100 - computedAlerts.length * 15)
+            };
+          });
 
           setSelectedPacket(prev => prev || packetsData.packets[0] || null);
         }

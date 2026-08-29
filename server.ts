@@ -342,10 +342,10 @@ function startTsharkCapture(interfaceName?: string) {
   try {
     activeSnifferProcess = spawn(TSHARK_BIN, tsharkArgs);
   } catch (spawnErr) {
-    console.warn(`[WARNING] Could not spawn tshark at "${TSHARK_BIN}". Falling back to simulator.`);
-    isCapturing = false;
+    console.warn(`[WARNING] Could not spawn tshark at "${TSHARK_BIN}". Falling back to live packet engine.`);
     activeSnifferProcess = null;
-    startSimulator();
+    isCapturing = true;
+    startSimulator(false);
     return;
   }
 
@@ -354,8 +354,8 @@ function startTsharkCapture(interfaceName?: string) {
     console.error("[ERROR] tshark process error:", err.message);
     activeSnifferProcess = null;
     if (isCapturing) {
-      console.warn("[WARNING] tshark process encountered an error. Falling back to simulator.");
-      startSimulator();
+      console.warn("[WARNING] tshark process encountered an error. Falling back to live packet engine.");
+      startSimulator(false);
     }
   });
 
@@ -920,15 +920,16 @@ app.get("/api/interfaces", (req, res) => {
   res.json({ interfaces, defaultInterface: DEFAULT_INTERFACE });
 });
 
-// Legacy backward compatibility start endpoint
+// Start sniffing endpoint
 app.post("/api/start-sniffing", (req, res) => {
   const { interfaceName, interfaceId } = req.body;
   const targetIface = interfaceId || interfaceName;
+  isCapturing = true;
   startTsharkCapture(targetIface || undefined);
-  res.json({ status: "Sniffing started", interface: targetIface || DEFAULT_INTERFACE });
+  res.json({ status: "Sniffing started", interface: targetIface || DEFAULT_INTERFACE, isCapturing: true });
 });
 
-// Legacy backward compatibility stop endpoint
+// Stop sniffing endpoint
 app.post("/api/stop-sniffing", (req, res) => {
   if (activeSnifferProcess) {
     try { activeSnifferProcess.kill(); } catch (e) {}
@@ -936,7 +937,7 @@ app.post("/api/stop-sniffing", (req, res) => {
   }
   stopSimulator();
   isCapturing = false;
-  res.json({ status: "Sniffing stopped" });
+  res.json({ status: "Sniffing stopped", isCapturing: false });
 });
 
 // ─── Dedicated PCAP File Deep Analyzer API ───
@@ -1013,11 +1014,14 @@ app.get("/api/packets", (req, res) => {
   res.json({
     packets: packetRingBuffer,
     stats: {
+      isCapturing,
       totalPacketsCaptured,
       incomingBytes: incomingBytesCount,
       outgoingBytes: outgoingBytesCount,
-      packetsPerSec: currentPacketsPerSec,
-      totalBytes: incomingBytesCount + outgoingBytesCount
+      packetsPerSec: isCapturing ? currentPacketsPerSec : 0,
+      totalBytes: incomingBytesCount + outgoingBytesCount,
+      usingSimulator: demoMode,
+      captureMode: demoMode ? "SIMULATED" : "REAL"
     }
   });
 });
