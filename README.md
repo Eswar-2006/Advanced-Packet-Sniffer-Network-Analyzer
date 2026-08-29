@@ -3,19 +3,22 @@
 # 🛡️ Sentinel Analytica
 ### Advanced Real-Time Packet Sniffing, Threat Intelligence & Network Forensics Platform
 
-[![Live Platform](https://img.shields.io/badge/Live_Platform-Sentinel_Analytica-00f2ff?style=for-the-badge&logo=render&logoColor=white)](https://sentinel-analytica.onrender.com)
+🌐 **Live Hosted Platform:** [https://sentinel-analytica.onrender.com/](https://sentinel-analytica.onrender.com/)
+
+[![Live Deployment](https://img.shields.io/badge/Live_Website-sentinel--analytica.onrender.com-00f2ff?style=for-the-badge&logo=render&logoColor=white)](https://sentinel-analytica.onrender.com/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![Scapy](https://img.shields.io/badge/Capture-Scapy%20%2F%20TShark-FF6B6B?style=for-the-badge&logo=wireshark&logoColor=white)](https://scapy.net)
 [![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://reactjs.org/)
-[![Tailwind CSS](https://img.shields.io/badge/TailwindCSS-Vanilla_CSS-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 
 <p align="center">
   <b>Sentinel Analytica</b> is an enterprise-grade cybersecurity network monitoring platform that bridges live physical hardware packet captures (Wi-Fi, Ethernet, Loopback, VPN) to a reactive, high-performance web dashboard over encrypted WebSocket streams.
 </p>
 
-[Explore Live Demo](https://sentinel-analytica.onrender.com) • [Hardware Agent](#-sentinel-local-hardware-agent) • [Architecture](#-target-architecture) • [API Reference](#-api-endpoints) • [Security & Privacy](#-security--privacy-framework)
+### 🚀 **[👉 Access Live Platform: https://sentinel-analytica.onrender.com/ 👈](https://sentinel-analytica.onrender.com/)**
+
+[Live Dashboard](https://sentinel-analytica.onrender.com/) • [Hardware Agent](#-sentinel-local-hardware-agent) • [Architecture](#-target-architecture) • [API Reference](#-api-endpoints) • [Security & Privacy](#-security--privacy-framework)
 
 ---
 
