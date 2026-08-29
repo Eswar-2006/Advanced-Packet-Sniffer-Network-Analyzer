@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Packet, SecurityAlert, SnifferStats, SnifferFilter, AgentInfo, NetworkInterface, CaptureMode } from './types';
-import { INITIAL_PACKETS, INITIAL_ALERTS, INITIAL_STATS } from './mockData';
+import { INITIAL_PACKETS, INITIAL_ALERTS, INITIAL_STATS, DEMO_PACKETS } from './mockData';
 import { filterPackets, runSecurityAnalysis } from './utils';
 import { exportToCSV, exportToJSON, generateHTMLReport } from './reportGenerator';
 import { SecurityPanel } from './components/SecurityPanel';
@@ -448,7 +448,20 @@ export default function App() {
       const data = await res.json();
       setIsDemoMode(data.demoMode);
       setCaptureMode(data.demoMode ? 'SIMULATED' : 'REAL');
-      if (!data.demoMode) {
+      if (data.demoMode) {
+        setPackets(DEMO_PACKETS);
+        setSelectedPacket(DEMO_PACKETS[0] || null);
+        const demoAlerts = runSecurityAnalysis(DEMO_PACKETS);
+        setAlerts(demoAlerts);
+        setStats(prev => ({
+          ...prev,
+          totalPackets: DEMO_PACKETS.length,
+          packetsPerSec: 6,
+          threatCounter: demoAlerts.length,
+          alertCounter: demoAlerts.length,
+          networkHealthScore: 85
+        }));
+      } else {
         setPackets([]);
         setAlerts([]);
         setLiveConnections([]);
@@ -466,6 +479,15 @@ export default function App() {
           alertCounter: 0,
           networkHealthScore: 100
         }));
+        // Request immediate live packet pull
+        const pRes = await fetch('/api/packets');
+        const pData = await pRes.json();
+        if (pData.packets && pData.packets.length > 0) {
+          setPackets(pData.packets);
+          setSelectedPacket(pData.packets[0] || null);
+          const liveAlerts = runSecurityAnalysis(pData.packets);
+          setAlerts(liveAlerts);
+        }
       }
     } catch (err) {
       console.error("Failed to toggle demo mode:", err);
@@ -1275,7 +1297,63 @@ Your job is to explain real network traffic, packets, threats, and protocols in 
 
         {/* Tab 2: Packet Inspector split layout */}
         {activeTab === 'PACKETS' && (
-          <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
+          <div className="space-y-4">
+            
+            {/* Dedicated Live Stream vs. Demo Dataset Mode Switcher */}
+            <div className="bg-brand-card border border-brand-border rounded p-3.5 flex flex-wrap items-center justify-between gap-4 shadow-lg">
+              <div className="flex items-center gap-3">
+                <div className={`p-2 rounded border ${isDemoMode ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'}`}>
+                  <Search className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-xs font-bold text-white uppercase tracking-wider">PACKET INSPECTION ENGINE</h2>
+                    <span className={`text-[10px] px-2.5 py-0.5 rounded font-bold uppercase tracking-wider flex items-center gap-1.5 ${
+                      isDemoMode
+                        ? 'bg-amber-950/80 text-amber-300 border border-amber-500/50'
+                        : 'bg-emerald-950/80 text-emerald-400 border border-emerald-500/50'
+                    }`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${isDemoMode ? 'bg-amber-400' : 'bg-emerald-400 animate-pulse'}`}></span>
+                      {isDemoMode ? 'DEMO DATASET MODE' : 'LIVE NETWORK STREAM'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-brand-muted mt-0.5 font-mono">
+                    {isDemoMode
+                      ? '⚡ Inspecting offline scenario packets (SQL Injection, TLS Handshakes, DNS C2, Port Scans) for learning & testing.'
+                      : '🔴 Inspecting real-time network packets captured live from your authorized network interfaces.'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 bg-brand-panel p-1 rounded-lg border border-brand-border">
+                <button
+                  onClick={() => isDemoMode && handleToggleDemoMode()}
+                  className={`text-xs px-3.5 py-1.5 rounded font-bold uppercase tracking-wider flex items-center gap-1.5 transition cursor-pointer ${
+                    !isDemoMode
+                      ? 'bg-emerald-600 text-white shadow-md'
+                      : 'text-brand-muted hover:text-white'
+                  }`}
+                  title="Switch to capturing authentic live network packets"
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span>
+                  Live Stream
+                </button>
+                <button
+                  onClick={() => !isDemoMode && handleToggleDemoMode()}
+                  className={`text-xs px-3.5 py-1.5 rounded font-bold uppercase tracking-wider flex items-center gap-1.5 transition cursor-pointer ${
+                    isDemoMode
+                      ? 'bg-amber-600 text-white shadow-md'
+                      : 'text-brand-muted hover:text-white'
+                  }`}
+                  title="Switch to inspecting rich offline demo scenarios"
+                >
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  Demo Dataset
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
             
             {/* Filter sidebar & table column */}
             <div className="xl:col-span-8 space-y-4">
@@ -1469,11 +1547,18 @@ Your job is to explain real network traffic, packets, threats, and protocols in 
             {/* Packet Details Inspector column */}
             <div className="xl:col-span-4 space-y-4">
               <div className="bg-brand-card border border-brand-border rounded p-4 space-y-4 h-[580px] overflow-y-auto">
-                <div className="border-b border-brand-border pb-3">
+                <div className="border-b border-brand-border pb-3 flex items-center justify-between">
                   <h3 className="text-xs font-bold text-brand-muted uppercase tracking-wider flex items-center gap-2">
                     <Terminal className="w-4 h-4 text-brand-accent" />
-                    Deep Packet Inspector (OSI Model)
+                    Deep Packet Inspector
                   </h3>
+                  <span className={`text-[9px] px-2 py-0.5 rounded font-bold uppercase tracking-wider ${
+                    isDemoMode
+                      ? 'bg-amber-950/70 text-amber-300 border border-amber-500/40'
+                      : 'bg-emerald-950/70 text-emerald-400 border border-emerald-500/40'
+                  }`}>
+                    {isDemoMode ? 'DEMO' : 'LIVE'}
+                  </span>
                 </div>
 
                 {selectedPacket ? (
@@ -1539,9 +1624,9 @@ Your job is to explain real network traffic, packets, threats, and protocols in 
                 )}
               </div>
             </div>
-
           </div>
-        )}
+        </div>
+      )}
 
         {/* Tab 3: Security analysis simulator */}
         {activeTab === 'SECURITY' && (
