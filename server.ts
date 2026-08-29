@@ -1394,7 +1394,7 @@ function probeTcpPort(
           }
         }
         if (!detectedVer && port === 443) detectedVer = "TLSv1.3 OpenSSL";
-        if (!detectedVer && port === 3000) detectedVer = "Node.js Express Server";
+        if (!detectedVer && (port === 3000 || port === PORT)) detectedVer = "Node.js Express Web Server";
         if (!detectedVer && port === 5173) detectedVer = "Vite Dev Server";
         finish(true, bannerData, detectedVer || undefined);
       }, 250);
@@ -1477,6 +1477,11 @@ async function runNativeNetworkScan(target: string, flags: string): Promise<{ st
     portsToScan = [...FAST_100_PORTS];
   } else {
     portsToScan = [...DEFAULT_TOP_PORTS];
+  }
+
+  // Ensure current server PORT is included when testing localhost / loopback
+  if ((resolvedIp === "127.0.0.1" || target === "localhost") && PORT && !portsToScan.includes(PORT)) {
+    portsToScan.push(PORT);
   }
 
   // Remove duplicates
