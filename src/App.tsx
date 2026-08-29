@@ -71,6 +71,7 @@ export default function App() {
   const [packets, setPackets] = useState<Packet[]>(INITIAL_PACKETS);
   const [alerts, setAlerts] = useState<SecurityAlert[]>(INITIAL_ALERTS);
   const [stats, setStats] = useState<SnifferStats>(INITIAL_STATS);
+  const [isDemoMode, setIsDemoMode] = useState<boolean>(false);
 
   // Live traffic intelligence state
   const [liveConnections, setLiveConnections] = useState<any[]>([]);
@@ -79,7 +80,7 @@ export default function App() {
   const [totalBytes, setTotalBytes] = useState(0);
 
   // Selected Packet for Inspector
-  const [selectedPacket, setSelectedPacket] = useState<Packet | null>(INITIAL_PACKETS[0]);
+  const [selectedPacket, setSelectedPacket] = useState<Packet | null>(null);
 
   // Filters state
   const [filters, setFilters] = useState<SnifferFilter>({
@@ -374,7 +375,7 @@ export default function App() {
     document.body.removeChild(link);
   };
 
-  // Poll real-time data — always active (tshark starts on server boot)
+  // Poll real-time data from backend packet ingestion engine
   useEffect(() => {
     const fetchAll = async () => {
       try {
@@ -394,18 +395,32 @@ export default function App() {
         if (packetsData.packets) {
           setPackets(packetsData.packets);
           setTotalBytes(packetsData.stats?.totalBytes || 0);
+
+          // Compute conservative real threat analysis directly from observed packets
+          const computedAlerts = runSecurityAnalysis(packetsData.packets);
+          setAlerts(computedAlerts);
+
+          if (packetsData.stats?.usingSimulator !== undefined) {
+            setIsDemoMode(packetsData.stats.usingSimulator);
+            setCaptureMode(packetsData.stats.usingSimulator ? 'SIMULATED' : 'REAL');
+          }
+
           setStats(prev => ({
             ...prev,
-            totalPackets:    packetsData.stats.totalPacketsCaptured || packetsData.packets.length,
-            packetsPerSec:   packetsData.stats.packetsPerSec || 0,
-            incomingBytes:   packetsData.stats.incomingBytes || 0,
-            outgoingBytes:   packetsData.stats.outgoingBytes || 0,
+            totalPackets:    packetsData.stats?.totalPacketsCaptured ?? packetsData.packets.length,
+            packetsPerSec:   packetsData.stats?.packetsPerSec || 0,
+            incomingBytes:   packetsData.stats?.incomingBytes || 0,
+            outgoingBytes:   packetsData.stats?.outgoingBytes || 0,
             cpuUsage:        statsData.cpuUsage        || prev.cpuUsage,
             memoryUsage:     statsData.memoryUsage     || prev.memoryUsage,
             diskUsage:       statsData.diskUsage       || prev.diskUsage,
             activeConnections: connsData.total         || prev.activeConnections,
-            networkHealthScore: statsData.networkHealthScore || prev.networkHealthScore
+            threatCounter:   computedAlerts.length,
+            alertCounter:    computedAlerts.length,
+            networkHealthScore: Math.max(25, 100 - computedAlerts.length * 15)
           }));
+
+          setSelectedPacket(prev => prev || packetsData.packets[0] || null);
         }
         if (connsData.connections) setLiveConnections(connsData.connections);
         if (dnsData.entries)       setDnsEntries(dnsData.entries);
@@ -419,6 +434,37 @@ export default function App() {
     const interval = setInterval(fetchAll, 1500);
     return () => clearInterval(interval);
   }, []);
+
+  // Demo Mode Switcher
+  const handleToggleDemoMode = async () => {
+    try {
+      const res = await fetch('/api/demo-mode/toggle', { method: 'POST' });
+      const data = await res.json();
+      setIsDemoMode(data.demoMode);
+      setCaptureMode(data.demoMode ? 'SIMULATED' : 'REAL');
+      if (!data.demoMode) {
+        setPackets([]);
+        setAlerts([]);
+        setLiveConnections([]);
+        setDnsEntries([]);
+        setTopSites([]);
+        setSelectedPacket(null);
+        setStats(prev => ({
+          ...prev,
+          totalPackets: 0,
+          packetsPerSec: 0,
+          incomingBytes: 0,
+          outgoingBytes: 0,
+          activeConnections: 0,
+          threatCounter: 0,
+          alertCounter: 0,
+          networkHealthScore: 100
+        }));
+      }
+    } catch (err) {
+      console.error("Failed to toggle demo mode:", err);
+    }
+  };
 
 
   // Start / Stop sniffer action
@@ -589,29 +635,35 @@ export default function App() {
     }
   };
 
-  // Gemini assistant prompt sender server proxy
+  // AI Copilot prompt sender using real network telemetry
   const handleGeminiQuery = async (userPrompt: string): Promise<string> => {
-    const contextStr = packets
-      .slice(0, 5)
-      .map(p => `[ID:${p.id} Proto:${p.protocol} Path:${p.srcIp}->${p.dstIp} Sum:${p.summary}]`)
-      .join('\n');
+    const protoList = Array.from(new Set(packets.map(p => p.protocol))).join(', ') || 'No traffic captured yet';
+    const alertList = alerts.map(a => `${a.type} (${a.source} -> ${a.destination})`).join('; ') || 'No active security incidents detected';
+    const topSitesList = topSites.slice(0, 5).map(s => s.host).join(', ') || 'None';
 
-    const systemRule = `You are Sentinel AI — a friendly, expert network security assistant built into a real-time packet sniffer dashboard.
+    const contextStr = `
+CURRENT LIVE NETWORK TELEMETRY:
+- Interface Status: ${stats.interfaceStatus} (${captureInterface})
+- Total Packets Captured: ${stats.totalPackets} (Flow rate: ${stats.packetsPerSec} pkts/sec)
+- Active 4-Tuple Connections: ${liveConnections.length}
+- Observed Protocols: ${protoList}
+- Active Security Alerts / Anomalies: ${alertList}
+- Top Visited Sites / Domains: ${topSitesList}
 
-Your job is to explain network traffic, packets, threats, and protocols in a way that ANYONE can understand — even people who have never studied IT or cybersecurity.
+RECENT CAPTURED PACKETS (Sample of ${Math.min(packets.length, 8)}):
+${packets.slice(0, 8).map(p => `[#${p.id} ${p.timestamp}] ${p.protocol} ${p.srcIp}:${p.srcPort || ''} -> ${p.dstIp}:${p.dstPort || ''} (${p.size} bytes, ${p.direction}) Summary: ${p.summary}`).join('\n') || 'None'}
+`.trim();
+
+    const systemRule = `You are Sentinel AI — a friendly, expert network security assistant built into the Sentinel Analytica real-time packet sniffer dashboard.
+
+Your job is to explain real network traffic, packets, threats, and protocols in a way that ANYONE can understand using the actual observed network telemetry provided.
 
 ## RULES FOR EVERY RESPONSE:
-1. **Plain English first** — Start with a simple, jargon-free explanation. Imagine you're explaining to a curious 16-year-old who has never heard of TCP or UDP.
-2. **Then go deeper** — After the simple explanation, add a short technical breakdown for advanced users.
-3. **Real-world analogy** — Always include a relatable real-world example or analogy (e.g. comparing a TCP handshake to knocking on a door and waiting for someone to answer before speaking).
-4. **Actionable advice** — If there's a threat or concern, give clear steps to fix it.
-5. **Next Prompt Suggestions** — At the very END of EVERY response, add a section:
-
----
-💡 **You might also want to ask:**
-1. [Relevant follow-up question 1]
-2. [Relevant follow-up question 2]
-3. [Relevant follow-up question 3]
+1. **Plain English first** — Start with a simple, jargon-free explanation. Imagine you're explaining to a curious beginner.
+2. **Use Actual Telemetry** — Refer to the real connections, observed protocols, and alert counts from the live network context. DO NOT invent fake packet numbers or imaginary attacks if none exist in the telemetry.
+3. **Real-world analogy** — Include a relatable real-world example or analogy.
+4. **Actionable advice** — If there is an anomaly or concern, give clear steps to address it.
+5. **Next Prompt Suggestions** — At the end of every response, add suggested next questions.
 
 ## FORMAT EVERY RESPONSE LIKE THIS:
 
@@ -619,7 +671,7 @@ Your job is to explain network traffic, packets, threats, and protocols in a way
 (2-3 sentences in plain English that anyone can understand)
 
 ### 🔬 Technical Breakdown
-(Deeper technical details, protocols, ports, flags)
+(Deeper technical details using observed protocols, ports, and connection patterns)
 
 ### 📦 Real-World Example
 (A relatable analogy or scenario from everyday life)
@@ -631,9 +683,7 @@ Your job is to explain network traffic, packets, threats, and protocols in a way
 💡 **You might also want to ask:**
 1. ...
 2. ...
-3. ...
-
-Use markdown formatting. Be warm and approachable, not intimidating.`;
+3. ...`;
 
     try {
       const res = await fetch('/api/gemini-ask', {
@@ -643,7 +693,7 @@ Use markdown formatting. Be warm and approachable, not intimidating.`;
       });
       const data = await res.json();
       if (data.error) {
-        return `Gemini assistant error: ${data.error}`;
+        return `AI assistant error: ${data.error}`;
       }
       return data.text || "No insights could be formulated by the AI model at this moment.";
     } catch (err: any) {
@@ -784,6 +834,8 @@ Use markdown formatting. Be warm and approachable, not intimidating.`;
         totalPackets={stats.totalPackets}
         totalBytes={totalBytes}
         isRefreshing={isRefreshingAgents}
+        isDemoMode={isDemoMode}
+        onToggleDemoMode={handleToggleDemoMode}
       />
 
 

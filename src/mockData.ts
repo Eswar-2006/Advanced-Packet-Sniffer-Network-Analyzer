@@ -1,7 +1,7 @@
 // Pre-loaded/generated Mock Packets database representing multi-protocol capture with various detailed scenarios
 import { Packet, SecurityAlert, SnifferStats } from './types';
 
-export const INITIAL_PACKETS: Packet[] = [
+export const DEMO_PACKETS: Packet[] = [
   {
     id: 1,
     timestamp: "2026-07-08T05:52:12.001Z",
@@ -300,50 +300,29 @@ export const INITIAL_PACKETS: Packet[] = [
   }
 ];
 
-export const INITIAL_ALERTS: SecurityAlert[] = [
-  {
-    id: "alert_01",
-    timestamp: "2026-07-08T05:52:12.302Z",
-    severity: "MEDIUM",
-    type: "Port Scanning Detected",
-    source: "185.190.140.22",
-    destination: "192.168.1.15",
-    message: "Host 185.190.140.22 probed port 80 and 443 in quick succession (SYN packet scans). Possible active reconnaissance.",
-    packetId: 9,
-    resolved: false
-  },
-  {
-    id: "alert_02",
-    timestamp: "2026-07-08T05:52:12.012Z",
-    severity: "LOW",
-    type: "Suspicious Plaintext HTTP",
-    source: "192.168.1.104",
-    destination: "192.168.1.1",
-    message: "Plaintext HTTP traffic accessed on internal gateway router. Transmitting non-encrypted request details.",
-    packetId: 3,
-    resolved: false
-  }
-];
+export const INITIAL_PACKETS: Packet[] = [];
+
+export const INITIAL_ALERTS: SecurityAlert[] = [];
 
 export const INITIAL_STATS: SnifferStats = {
-  totalPackets: 10,
-  packetsPerSec: 154,
-  bandwidthBps: 84204,
-  incomingBytes: 450 + 64 + 60 + 60 + 98 + 60,
-  outgoingBytes: 1514 + 78 + 342 + 1120,
-  cpuUsage: 14.5,
-  memoryUsage: 64.2,
-  diskUsage: 32.1,
-  networkUtilization: 2.4,
-  activeConnections: 18,
-  interfaceStatus: 'ACTIVE',
-  topSourceIp: "192.168.1.15",
-  topDstIp: "192.168.1.15",
-  topPort: 443,
-  topProtocol: "TCP",
-  topCountry: "USA",
-  threatCounter: 2,
-  alertCounter: 2,
+  totalPackets: 0,
+  packetsPerSec: 0,
+  bandwidthBps: 0,
+  incomingBytes: 0,
+  outgoingBytes: 0,
+  cpuUsage: 12.0,
+  memoryUsage: 45.0,
+  diskUsage: 28.0,
+  networkUtilization: 0,
+  activeConnections: 0,
+  interfaceStatus: 'IDLE',
+  topSourceIp: "0.0.0.0",
+  topDstIp: "0.0.0.0",
+  topPort: 0,
+  topProtocol: "NONE",
+  topCountry: "N/A",
+  threatCounter: 0,
+  alertCounter: 0,
   isCapturing: false,
-  networkHealthScore: 88
+  networkHealthScore: 100
 };

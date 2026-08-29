@@ -33,6 +33,8 @@ interface MonitoringSourceBarProps {
   totalPackets: number;
   totalBytes: number;
   isRefreshing?: boolean;
+  isDemoMode?: boolean;
+  onToggleDemoMode?: () => void;
 }
 
 export const MonitoringSourceBar: React.FC<MonitoringSourceBarProps> = ({
@@ -50,7 +52,9 @@ export const MonitoringSourceBar: React.FC<MonitoringSourceBarProps> = ({
   packetsPerSec,
   totalPackets,
   totalBytes,
-  isRefreshing = false
+  isRefreshing = false,
+  isDemoMode = false,
+  onToggleDemoMode
 }) => {
   const currentAgent = agents.find(a => a.id === selectedAgentId) || agents[0];
   const interfaces = currentAgent?.interfaces || [];
@@ -183,19 +187,46 @@ export const MonitoringSourceBar: React.FC<MonitoringSourceBarProps> = ({
             </button>
           </div>
 
-          {/* Capture Mode Indicator (Constraint 2: Explicit REAL vs SIMULATED badge!) */}
-          <div className="flex items-center gap-1.5">
+          {/* Capture Mode Indicator & Demo Mode Toggle */}
+          <div className="flex items-center gap-2">
             <span className="text-[10px] text-brand-muted">ENGINE:</span>
-            {captureMode === 'REAL' ? (
-              <span className="text-[10px] bg-emerald-950/60 text-emerald-400 font-bold px-2 py-0.5 rounded border border-emerald-600/40 flex items-center gap-1">
+            {isDemoMode ? (
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] bg-amber-950/70 text-amber-300 font-bold px-2.5 py-0.5 rounded border border-amber-500/50 flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3 text-amber-400" />
+                  SIMULATED DEMO TRAFFIC
+                </span>
+                {onToggleDemoMode && (
+                  <button
+                    onClick={onToggleDemoMode}
+                    className="text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-0.5 rounded border border-slate-700 hover:border-slate-500 transition cursor-pointer"
+                    title="Switch to Real Hardware Capture Mode"
+                  >
+                    Switch to Live Mode
+                  </button>
+                )}
+              </div>
+            ) : isCapturing && captureMode === 'REAL' ? (
+              <span className="text-[10px] bg-emerald-950/70 text-emerald-400 font-bold px-2.5 py-0.5 rounded border border-emerald-500/50 flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
                 <Shield className="w-3 h-3 text-emerald-400" />
-                REAL TSHARK CAPTURE
+                LIVE PACKET CAPTURE
               </span>
             ) : (
-              <span className="text-[10px] bg-amber-950/60 text-amber-300 font-bold px-2 py-0.5 rounded border border-amber-600/40 flex items-center gap-1" title="tshark binary not detected or active on target adapter. Demonstrating telemetry via high-fidelity packet simulator.">
-                <AlertTriangle className="w-3 h-3 text-amber-400" />
-                SIMULATED DEMO TRAFFIC
-              </span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] bg-slate-900 text-slate-400 font-bold px-2 py-0.5 rounded border border-slate-800 flex items-center gap-1">
+                  WAITING FOR LOCAL AGENT
+                </span>
+                {onToggleDemoMode && (
+                  <button
+                    onClick={onToggleDemoMode}
+                    className="text-[10px] bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded border border-amber-500/30 hover:border-amber-400 transition cursor-pointer"
+                    title="Test dashboard with high-fidelity simulated packets"
+                  >
+                    Enable Demo Mode
+                  </button>
+                )}
+              </div>
             )}
           </div>
         </div>

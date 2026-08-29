@@ -586,25 +586,27 @@ function generateSimulatedPacket(): Packet {
   return packet;
 }
 
+let demoMode = false;
+
 function startSimulator() {
   if (simulatorInterval) return;
-  console.log('[SIMULATOR] tshark unavailable — starting built-in real-time packet simulator...');
+  demoMode = true;
+  console.log('[DEMO MODE] Starting simulated packet engine...');
   isCapturing = true;
 
-  // Burst initial packets so UI has rich connections, DNS, and site data immediately
-  for (let i = 0; i < 25; i++) {
+  // Generate initial burst for demo view
+  for (let i = 0; i < 20; i++) {
     const p = generateSimulatedPacket();
     ingestLivePacket(p);
   }
 
-  // Generate continuous live packets every 500ms
   simulatorInterval = setInterval(() => {
-    const count = Math.floor(Math.random() * 4) + 2;
+    const count = Math.floor(Math.random() * 3) + 1;
     for (let i = 0; i < count; i++) {
       const p = generateSimulatedPacket();
       ingestLivePacket(p);
     }
-  }, 500);
+  }, 600);
 }
 
 function stopSimulator() {
@@ -612,11 +614,12 @@ function stopSimulator() {
     clearInterval(simulatorInterval);
     simulatorInterval = null;
   }
-  isCapturing = false;
-  console.log('[SIMULATOR] Stopped.');
+  demoMode = false;
+  isCapturing = activeSnifferProcess !== null;
+  console.log('[DEMO MODE] Stopped.');
 }
 
-// Start capturing on startup (tshark first, simulator as fallback)
+// Start real local tshark capture if binary is present
 startTsharkCapture();
 
 // Periodic stats updater
@@ -632,16 +635,36 @@ setInterval(() => {
 
 // ─── Multi-Agent & Interface API Endpoints ───
 
-// Status endpoint (includes capture mode: REAL vs SIMULATED per Constraint 2)
+// Status endpoint (Strictly distinguishes REAL capture from DEMO mode)
 app.get("/api/status", (req, res) => {
   res.json({
-    isCapturing,
+    isCapturing: isCapturing || demoMode,
     totalPacketsCaptured,
     packetsPerSec: currentPacketsPerSec,
     bufferSize: packetRingBuffer.length,
-    usingSimulator: simulatorInterval !== null,
-    captureMode: simulatorInterval !== null ? "SIMULATED" : "REAL"
+    usingSimulator: demoMode,
+    captureMode: demoMode ? "SIMULATED" : "REAL",
+    demoMode
   });
+});
+
+// Demo mode control endpoints
+app.get("/api/demo-mode", (req, res) => {
+  res.json({ demoMode });
+});
+
+app.post("/api/demo-mode/toggle", (req, res) => {
+  const targetState = req.body?.enabled !== undefined ? req.body.enabled : !demoMode;
+  if (targetState) {
+    startSimulator();
+  } else {
+    stopSimulator();
+    packetRingBuffer.length = 0;
+    liveConnections.clear();
+    dnsCache.clear();
+    topSites.clear();
+  }
+  res.json({ success: true, demoMode });
 });
 
 // Helper to determine exact public URL (accounting for Render, reverse proxies, and SSL)
@@ -1766,7 +1789,17 @@ exit 0
   }
 });
 
-// 4. Windows Hardware Capture Agent Launcher (.cmd)
+// 4. Standalone Python Agent Download
+app.get("/api/download/agent-python", (req, res) => {
+  const pyAgentPath = path.join(process.cwd(), 'agent', 'sentinel_agent.py');
+  if (fs.existsSync(pyAgentPath)) {
+    res.setHeader('Content-Type', 'text/x-python');
+    return res.download(pyAgentPath, 'sentinel_agent.py');
+  }
+  return res.status(404).send('Python agent script not found');
+});
+
+// 5. Windows Hardware Capture Agent Launcher (.cmd)
 app.get("/api/download/agent-windows", (req, res) => {
   const serverUrl = getBaseUrl(req);
   const ownerId = (req.headers["x-user-id"] as string) || "default-user";
@@ -1797,25 +1830,46 @@ if not defined FOUND_PROJECT (
         "%USERPROFILE%\\Desktop\\advanced-packet-sniffer"
     ) do (
         if not defined FOUND_PROJECT (
-            if exist "%%~P\\agent\\index.ts" set "FOUND_PROJECT=%%~P"
+            if exist "%%~P\\agent\\sentinel_agent.py" set "FOUND_PROJECT=%%~P"
         )
     )
 )
 
+:: 1. Try Python Scapy Native Agent first
 if defined FOUND_PROJECT (
-    echo [+] Using local project repository at: "!FOUND_PROJECT!"
-    cd /d "!FOUND_PROJECT!"
-    call npx tsx agent/index.ts --server ${serverUrl} --token ${token}
-    if !errorlevel! equ 0 goto :done
+    if exist "!FOUND_PROJECT!\\agent\\sentinel_agent.py" (
+        echo [+] Found local Python capture agent at: "!FOUND_PROJECT!"
+        cd /d "!FOUND_PROJECT!"
+        python agent\\sentinel_agent.py --server ${serverUrl} --token ${token}
+        if !errorlevel! equ 0 goto :done
+        py -3 agent\\sentinel_agent.py --server ${serverUrl} --token ${token}
+        if !errorlevel! equ 0 goto :done
+    )
+    if exist "!FOUND_PROJECT!\\agent\\index.ts" (
+        echo [+] Spawning Node.js capture engine...
+        call npx tsx agent/index.ts --server ${serverUrl} --token ${token}
+        if !errorlevel! equ 0 goto :done
+    )
 )
 
-:: Standalone Agent Execution (for machines without cloned repository)
+:: 2. Standalone Agent Execution (for machines without cloned repository)
 echo [*] Initializing standalone hardware capture engine...
 set "AGENT_TEMP_DIR=%TEMP%\\sentinel-capture-agent"
 if not exist "%AGENT_TEMP_DIR%" mkdir "%AGENT_TEMP_DIR%"
 cd /d "%AGENT_TEMP_DIR%"
 
-echo [*] Downloading agent runner from ${serverUrl}...
+echo [*] Downloading Python Scapy agent from ${serverUrl}...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object System.Net.WebClient).DownloadFile('${serverUrl}/api/download/agent-python', 'sentinel_agent.py') } catch { exit 1 }"
+
+if exist "sentinel_agent.py" (
+    echo [+] Launching Python Hardware Capture Agent...
+    python sentinel_agent.py --server ${serverUrl} --token ${token}
+    if !errorlevel! equ 0 goto :done
+    py -3 sentinel_agent.py --server ${serverUrl} --token ${token}
+    if !errorlevel! equ 0 goto :done
+)
+
+echo [*] Downloading JS agent runner fallback from ${serverUrl}...
 powershell -NoProfile -ExecutionPolicy Bypass -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object System.Net.WebClient).DownloadFile('${serverUrl}/api/download/agent-runner.js', 'agent-runner.cjs') } catch { exit 1 }"
 
 if exist "agent-runner.cjs" (
@@ -1826,8 +1880,8 @@ if exist "agent-runner.cjs" (
     if !errorlevel! equ 0 goto :done
 )
 
-echo [!] Notice: Please ensure Node.js is installed on this PC.
-echo [!] Download Node.js from https://nodejs.org if needed.
+echo [!] Notice: Please ensure Python 3 or Node.js is installed on this PC.
+echo [!] Download Python: https://python.org | Node.js: https://nodejs.org
 
 :done
 echo.
@@ -1846,7 +1900,7 @@ pause
   }
 });
 
-// 5. macOS Hardware Capture Agent Launcher (.command)
+// 6. macOS Hardware Capture Agent Launcher (.command)
 app.get("/api/download/agent-mac", (req, res) => {
   const serverUrl = getBaseUrl(req);
   const ownerId = (req.headers["x-user-id"] as string) || "default-user";
@@ -1863,6 +1917,12 @@ echo "Target Dashboard: $SERVER_URL"
 echo ""
 
 for p in "$PWD" "$PWD/.." "$HOME/Downloads/advanced-packet-sniffer" "$HOME/advanced-packet-sniffer"; do
+  if [ -f "$p/agent/sentinel_agent.py" ]; then
+    echo "[*] Using local Python agent at $p"
+    cd "$p"
+    python3 agent/sentinel_agent.py --server "$SERVER_URL" --token "$TOKEN"
+    exit 0
+  fi
   if [ -f "$p/agent/index.ts" ]; then
     echo "[*] Using local repository at $p"
     cd "$p"
@@ -1874,6 +1934,11 @@ done
 TMP_DIR="/tmp/sentinel-capture-agent"
 mkdir -p "$TMP_DIR"
 cd "$TMP_DIR"
+curl -sSL "$SERVER_URL/api/download/agent-python" -o sentinel_agent.py
+if [ -f "sentinel_agent.py" ]; then
+  python3 sentinel_agent.py --server "$SERVER_URL" --token "$TOKEN" && exit 0
+fi
+
 curl -sSL "$SERVER_URL/api/download/agent-runner.js" -o agent-runner.cjs
 if [ -f "agent-runner.cjs" ]; then
   npx -y tsx agent-runner.cjs --server "$SERVER_URL" --token "$TOKEN" || node agent-runner.cjs --server "$SERVER_URL" --token "$TOKEN"
@@ -1891,7 +1956,7 @@ fi
   }
 });
 
-// 6. Linux Hardware Capture Agent Launcher (.sh)
+// 7. Linux Hardware Capture Agent Launcher (.sh)
 app.get("/api/download/agent-linux", (req, res) => {
   const serverUrl = getBaseUrl(req);
   const ownerId = (req.headers["x-user-id"] as string) || "default-user";
@@ -1908,6 +1973,12 @@ echo "Target Dashboard: $SERVER_URL"
 echo ""
 
 for p in "$PWD" "$PWD/.." "$HOME/Downloads/advanced-packet-sniffer" "$HOME/advanced-packet-sniffer"; do
+  if [ -f "$p/agent/sentinel_agent.py" ]; then
+    echo "[*] Using local Python agent at $p"
+    cd "$p"
+    python3 agent/sentinel_agent.py --server "$SERVER_URL" --token "$TOKEN"
+    exit 0
+  fi
   if [ -f "$p/agent/index.ts" ]; then
     echo "[*] Using local repository at $p"
     cd "$p"
@@ -1919,6 +1990,11 @@ done
 TMP_DIR="/tmp/sentinel-capture-agent"
 mkdir -p "$TMP_DIR"
 cd "$TMP_DIR"
+curl -sSL "$SERVER_URL/api/download/agent-python" -o sentinel_agent.py
+if [ -f "sentinel_agent.py" ]; then
+  python3 sentinel_agent.py --server "$SERVER_URL" --token "$TOKEN" && exit 0
+fi
+
 curl -sSL "$SERVER_URL/api/download/agent-runner.js" -o agent-runner.cjs
 if [ -f "agent-runner.cjs" ]; then
   npx -y tsx agent-runner.cjs --server "$SERVER_URL" --token "$TOKEN" || node agent-runner.cjs --server "$SERVER_URL" --token "$TOKEN"

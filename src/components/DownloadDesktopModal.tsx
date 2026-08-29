@@ -244,29 +244,43 @@ export const DownloadDesktopModal: React.FC<DownloadDesktopModalProps> = ({
 
                 <div className="space-y-2">
                   <div className="flex items-center justify-between bg-black/70 p-3 rounded-lg border border-purple-900/60 font-mono text-xs">
-                    <code className="text-purple-300 overflow-x-auto">{npmAgentCommand}</code>
+                    <div className="overflow-x-auto">
+                      <span className="text-slate-400 text-[10px] block mb-0.5 font-sans"># Python Scapy Agent (Recommended for Windows / Linux / Mac):</span>
+                      <code className="text-purple-300">python agent/sentinel_agent.py --server {window.location.origin}</code>
+                    </div>
+                    <button
+                      onClick={() => copyToClipboard(`python agent/sentinel_agent.py --server ${window.location.origin}`, 'agent-python')}
+                      className="flex items-center gap-1.5 px-3 py-1 bg-purple-900/40 hover:bg-purple-800/60 text-purple-200 rounded text-xs transition-colors shrink-0 ml-2"
+                    >
+                      {copiedCmd === 'agent-python' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                      {copiedCmd === 'agent-python' ? 'Copied Python!' : 'Copy Python'}
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between bg-black/70 p-3 rounded-lg border border-purple-900/60 font-mono text-xs">
+                    <div className="overflow-x-auto">
+                      <span className="text-slate-400 text-[10px] block mb-0.5 font-sans"># Node.js Agent Runner:</span>
+                      <code className="text-purple-300">{npmAgentCommand}</code>
+                    </div>
                     <button
                       onClick={() => copyToClipboard(npmAgentCommand, 'agent-npm')}
                       className="flex items-center gap-1.5 px-3 py-1 bg-purple-900/40 hover:bg-purple-800/60 text-purple-200 rounded text-xs transition-colors shrink-0 ml-2"
                     >
                       {copiedCmd === 'agent-npm' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                      {copiedCmd === 'agent-npm' ? 'Copied!' : 'Copy'}
-                    </button>
-                  </div>
-
-                  <div className="flex items-center justify-between bg-black/70 p-3 rounded-lg border border-purple-900/60 font-mono text-xs">
-                    <code className="text-purple-300 overflow-x-auto">{agentCommand}</code>
-                    <button
-                      onClick={() => copyToClipboard(agentCommand, 'agent-cli')}
-                      className="flex items-center gap-1.5 px-3 py-1 bg-purple-900/40 hover:bg-purple-800/60 text-purple-200 rounded text-xs transition-colors shrink-0 ml-2"
-                    >
-                      {copiedCmd === 'agent-cli' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                      {copiedCmd === 'agent-cli' ? 'Copied!' : 'Copy NPX'}
+                      {copiedCmd === 'agent-npm' ? 'Copied Node!' : 'Copy Node'}
                     </button>
                   </div>
                 </div>
 
-                <div className="pt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div className="pt-2 grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <a
+                    href="/api/download/agent-python"
+                    download="sentinel_agent.py"
+                    className="py-2 px-2.5 rounded-lg bg-emerald-600/30 hover:bg-emerald-600/50 border border-emerald-500/50 text-emerald-200 font-bold text-[11px] flex items-center justify-center gap-1.5 transition-all cursor-pointer text-center"
+                  >
+                    <Download className="w-3.5 h-3.5 text-emerald-300 shrink-0" />
+                    Python (.py)
+                  </a>
                   <a
                     href="/api/download/agent-windows"
                     download="Sentinel-Capture-Agent.cmd"

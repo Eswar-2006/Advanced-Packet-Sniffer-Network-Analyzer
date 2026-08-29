@@ -73,75 +73,74 @@ export function filterPackets(packets: Packet[], filters: SnifferFilter): Packet
   });
 }
 
-// Lightweight anomaly detection engine based on heuristics & simple AI scoring
+// Conservative anomaly & threat detection engine based on actual observed network metadata
 export function runSecurityAnalysis(packets: Packet[]): SecurityAlert[] {
   const alerts: SecurityAlert[] = [];
   
-  // Track stats for detecting high-frequency activities (scanning, sweeps)
-  const ipCounts: { [ip: string]: { ports: Set<number>, times: number[] } } = {};
-  const arpRequestCount: { [ip: string]: number } = {};
-  const dnsQueries: string[] = [];
+  // Track statistics for detecting high-frequency activities (scanning, sweeps)
+  const ipPortMap: { [ip: string]: { ports: Set<number>, times: number[], dstIps: Set<string> } } = {};
+  const ipPacketCount: { [ip: string]: number } = {};
+  const arpCount: { [ip: string]: number } = {};
 
   packets.forEach((p, idx) => {
-    // Port Scanning Heuristics
-    if (p.protocol === 'TCP' && p.srcPort && p.dstPort) {
-      if (!ipCounts[p.srcIp]) {
-        ipCounts[p.srcIp] = { ports: new Set<number>(), times: [] };
+    // Count packets per source IP for burst detection
+    ipPacketCount[p.srcIp] = (ipPacketCount[p.srcIp] || 0) + 1;
+
+    // Port Scanning Heuristics (TCP/UDP with valid ports)
+    if ((p.protocol === 'TCP' || p.protocol === 'UDP') && p.dstPort && p.srcIp) {
+      if (!ipPortMap[p.srcIp]) {
+        ipPortMap[p.srcIp] = { ports: new Set<number>(), times: [], dstIps: new Set<string>() };
       }
-      ipCounts[p.srcIp].ports.add(p.dstPort);
-      ipCounts[p.srcIp].times.push(new Date(p.timestamp).getTime());
+      ipPortMap[p.srcIp].ports.add(p.dstPort);
+      ipPortMap[p.srcIp].dstIps.add(p.dstIp);
+      ipPortMap[p.srcIp].times.push(new Date(p.timestamp).getTime());
     }
 
-    // Malformed packet checks (e.g. invalid size, conflicting TCP flags)
+    // Malformed / Suspicious TCP Flag Combinations (e.g. SYN+FIN or NULL scan)
     if (p.protocol === 'TCP' && p.tcpFlags) {
       const flags = p.tcpFlags.toUpperCase();
-      // SYN-FIN alert (unusual flag combination used by scanners)
       if (flags.includes('SYN') && flags.includes('FIN')) {
         alerts.push({
-          id: `det_malformed_${idx}`,
-          timestamp: p.timestamp,
-          severity: 'HIGH',
-          type: 'Malformed Packet Detected',
-          source: p.srcIp,
-          destination: p.dstIp,
-          message: `Conflicting TCP flags detected: SYN and FIN are set concurrently in Packet #${p.id}. Possible active host fingerprinting.`,
-          packetId: p.id,
-          resolved: false
-        });
-      }
-    }
-
-    // DNS Tunneling Indicator (extremely large dns query names or abnormal length)
-    if (p.protocol === 'DNS' && p.summary.toLowerCase().includes('query')) {
-      if (p.size > 250) {
-        alerts.push({
-          id: `det_dns_tunnel_${idx}`,
-          timestamp: p.timestamp,
-          severity: 'HIGH',
-          type: 'DNS Tunneling Indicators',
-          source: p.srcIp,
-          destination: p.dstIp,
-          message: `Unusually large DNS query size (${p.size} bytes) in Packet #${p.id}. Indicative of possible covert communication tunneling.`,
-          packetId: p.id,
-          resolved: false
-        });
-      }
-    }
-
-    // ARP Spoofing / Broadcast Storm detection
-    if (p.protocol === 'ARP') {
-      if (!arpRequestCount[p.srcIp]) arpRequestCount[p.srcIp] = 0;
-      arpRequestCount[p.srcIp]++;
-      
-      if (arpRequestCount[p.srcIp] > 15) {
-        alerts.push({
-          id: `det_arp_storm_${idx}`,
+          id: `det_syn_fin_${p.id || idx}`,
           timestamp: p.timestamp,
           severity: 'MEDIUM',
-          type: 'ARP Broadcast Storm',
+          type: 'Suspicious TCP Flag Combination',
           source: p.srcIp,
-          destination: p.dstIp,
-          message: `Excessive frequency of ARP broadcast responses from ${p.srcIp}. Potential network looping or network mapping.`,
+          destination: `${p.dstIp}:${p.dstPort || '?'}` ,
+          message: `Conflicting TCP flags (SYN+FIN) observed in packet #${p.id}. May indicate host OS fingerprinting or non-standard TCP stack implementation.`,
+          packetId: p.id,
+          resolved: false
+        });
+      }
+    }
+
+    // DNS Tunneling / Covert Exfiltration Indicators
+    if (p.protocol === 'DNS' && (p.size > 512 || (p.summary && p.summary.length > 120))) {
+      alerts.push({
+        id: `det_dns_anomaly_${p.id || idx}`,
+        timestamp: p.timestamp,
+        severity: 'MEDIUM',
+        type: 'Anomalous DNS Query Size',
+        source: p.srcIp,
+        destination: `${p.dstIp}:53`,
+        message: `Unusually large DNS frame (${p.size} bytes) observed in packet #${p.id}. Pattern may suggest large DNS TXT resolution or potential covert channel.`,
+        packetId: p.id,
+        resolved: false
+      });
+    }
+
+    // ARP Rate Anomaly
+    if (p.protocol === 'ARP') {
+      arpCount[p.srcIp] = (arpCount[p.srcIp] || 0) + 1;
+      if (arpCount[p.srcIp] >= 20) {
+        alerts.push({
+          id: `det_arp_freq_${p.srcIp}`,
+          timestamp: p.timestamp,
+          severity: 'LOW',
+          type: 'High ARP Activity',
+          source: p.srcIp,
+          destination: p.dstIp || 'Broadcast',
+          message: `High frequency of ARP frames (${arpCount[p.srcIp]} packets) observed from ${p.srcIp}. Common during network topology changes, gateway discovery, or ARP storms.`,
           packetId: p.id,
           resolved: false
         });
@@ -149,18 +148,34 @@ export function runSecurityAnalysis(packets: Packet[]): SecurityAlert[] {
     }
   });
 
-  // Evaluate TCP port probing scanners
-  Object.keys(ipCounts).forEach(ip => {
-    const data = ipCounts[ip];
-    if (data.ports.size >= 2) {
+  // Conservative Port Scan Detection (requiring at least 8 distinct target ports)
+  Object.keys(ipPortMap).forEach(ip => {
+    const data = ipPortMap[ip];
+    if (data.ports.size >= 8) {
       alerts.push({
         id: `det_scan_${ip}`,
         timestamp: new Date().toISOString(),
         severity: 'HIGH',
-        type: 'Active Port Scan',
+        type: 'Potential Port Scan',
+        source: ip,
+        destination: Array.from(data.dstIps).slice(0, 3).join(', ') + (data.dstIps.size > 3 ? '...' : ''),
+        message: `Host ${ip} contacted ${data.ports.size} distinct destination ports within the captured window. Pattern is consistent with automated port discovery or vulnerability probing.`,
+        resolved: false
+      });
+    }
+  });
+
+  // Rapid Connection Burst Detection
+  Object.keys(ipPacketCount).forEach(ip => {
+    if (ipPacketCount[ip] >= 60 && !ip.startsWith('127.')) {
+      alerts.push({
+        id: `det_burst_${ip}`,
+        timestamp: new Date().toISOString(),
+        severity: 'LOW',
+        type: 'Abnormal Traffic Burst',
         source: ip,
         destination: 'Multiple',
-        message: `Host ${ip} probed ${data.ports.size} distinct destination ports. Immediate firewall isolation is recommended to mitigate active network scanning.`,
+        message: `Rapid connection burst (${ipPacketCount[ip]} packets) observed from source ${ip}. Verify whether this is expected file transfer or high-frequency polling activity.`,
         resolved: false
       });
     }
