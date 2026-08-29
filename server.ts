@@ -1,7 +1,7 @@
 import express from "express";
 import http from "http";
 import path from "path";
-import { spawn, exec, ChildProcess } from "child_process";
+import { spawn, exec, execFile, ChildProcess } from "child_process";
 import fs from "fs";
 import os from "os";
 import Groq from "groq-sdk";
@@ -1156,23 +1156,87 @@ app.get("/api/packet/download-payload", (req, res) => {
   res.send(content);
 });
 
+function findNmapBinary(): string {
+  if (process.platform === "win32") {
+    const candidates = [
+      "C:\\Program Files (x86)\\Nmap\\nmap.exe",
+      "C:\\Program Files\\Nmap\\nmap.exe",
+      path.join(process.env.ProgramFiles || "C:\\Program Files", "Nmap", "nmap.exe"),
+      path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "Nmap", "nmap.exe"),
+    ];
+    for (const p of candidates) {
+      if (fs.existsSync(p)) return p;
+    }
+    return "nmap";
+  }
+  const unixCandidates = ["/usr/bin/nmap", "/usr/local/bin/nmap", "/opt/homebrew/bin/nmap"];
+  for (const p of unixCandidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return "nmap";
+}
+
 // Run real Nmap Port scan
 app.post("/api/run-scan", (req, res) => {
   const { target, flags } = req.body;
   
-  // Clean target & flags to prevent injection while remaining functional
-  const sanitizedTarget = String(target || "127.0.0.1").replace(/[^a-zA-Z0-9.-]/g, "");
-  const cleanFlags = String(flags || "-F").split(" ").filter(f => /^-[a-zA-Z0-9]+$/.test(f)).join(" ");
+  // Clean target (supports IPv4, IPv6, CIDR like 192.168.1.0/24, IP ranges 10.0.0.1-50, and hostnames)
+  const rawTarget = String(target || "127.0.0.1").trim();
+  const sanitizedTarget = rawTarget.replace(/[^a-zA-Z0-9.:/-]/g, "");
 
-  const command = `nmap ${cleanFlags} ${sanitizedTarget}`;
-  console.log(`Executing real nmap tool: ${command}`);
+  if (!sanitizedTarget) {
+    return res.status(400).json({
+      success: false,
+      stdout: "",
+      stderr: "Invalid target specified.",
+      command: "nmap"
+    });
+  }
 
-  exec(command, (error, stdout, stderr) => {
+  // Parse and sanitize flags/arguments safely
+  const rawFlags = String(flags || "-F").trim();
+  const rawTokens = rawFlags.split(/\s+/).filter(Boolean);
+  
+  // Whitelist safe argument tokens (flags, port specifications, script names, timing parameters)
+  const sanitizedArgs: string[] = [];
+  for (const token of rawTokens) {
+    if (/^[a-zA-Z0-9_.,:=+/-]+$/.test(token)) {
+      sanitizedArgs.push(token);
+    }
+  }
+
+  if (sanitizedArgs.length === 0) {
+    sanitizedArgs.push("-F");
+  }
+
+  const binaryPath = findNmapBinary();
+  const allArgs = [...sanitizedArgs, sanitizedTarget];
+  const commandDisplay = `nmap ${allArgs.join(" ")}`;
+  console.log(`Executing real nmap tool: ${binaryPath} with args [${allArgs.join(", ")}]`);
+
+  const startTime = Date.now();
+  execFile(binaryPath, allArgs, { timeout: 120000, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+    const durationMs = Date.now() - startTime;
+    let outputStdout = stdout || "";
+    let outputStderr = stderr || "";
+
+    if (error && !outputStdout && !outputStderr) {
+      if ((error as any).code === "ENOENT") {
+        outputStderr = `Nmap executable was not found on the host system. Please install Nmap (https://nmap.org/download.html or 'sudo apt install nmap' on Kali Linux) and ensure it is in PATH.`;
+      } else if (error.killed) {
+        outputStderr = `Scan timed out after 120 seconds. Target host might be dropping probe packets (try adding -Pn flag).`;
+      } else {
+        outputStderr = error.message;
+      }
+    }
+
     res.json({
-      success: !error,
-      stdout: stdout || "",
-      stderr: stderr || "",
-      command
+      success: !error || !!outputStdout,
+      stdout: outputStdout,
+      stderr: outputStderr,
+      command: commandDisplay,
+      binary: binaryPath,
+      durationMs
     });
   });
 });
