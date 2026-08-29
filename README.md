@@ -1,117 +1,256 @@
 <div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
+
+# 🛡️ Sentinel Analytica
+### Advanced Real-Time Packet Sniffing, Threat Intelligence & Network Forensics Platform
+
+[![Live Platform](https://img.shields.io/badge/Live_Platform-Sentinel_Analytica-00f2ff?style=for-the-badge&logo=render&logoColor=white)](https://sentinel-analytica.onrender.com)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.0-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![Scapy](https://img.shields.io/badge/Capture-Scapy%20%2F%20TShark-FF6B6B?style=for-the-badge&logo=wireshark&logoColor=white)](https://scapy.net)
+[![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://reactjs.org/)
+[![Tailwind CSS](https://img.shields.io/badge/TailwindCSS-Vanilla_CSS-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
+[![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
+
+<p align="center">
+  <b>Sentinel Analytica</b> is an enterprise-grade cybersecurity network monitoring platform that bridges live physical hardware packet captures (Wi-Fi, Ethernet, Loopback, VPN) to a reactive, high-performance web dashboard over encrypted WebSocket streams.
+</p>
+
+[Explore Live Demo](https://sentinel-analytica.onrender.com) • [Hardware Agent](#-sentinel-local-hardware-agent) • [Architecture](#-target-architecture) • [API Reference](#-api-endpoints) • [Security & Privacy](#-security--privacy-framework)
+
+---
+
 </div>
 
-# Run and deploy your AI Studio app
-
-This contains everything you need to run your app locally.
-
-View your app in AI Studio: https://ai.studio/apps/7c03a433-28b2-4f70-8a57-e75be6ad20cf
-
-## Run Locally
-
-**Prerequisites:**  Node.js
-
-
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
-
-## Available Packet Sniffing Tools & Command Reference
-
-This project utilizes both real-time packet capturing tools and simulation engines to analyze network traffic. Below is the documentation of each tool, its role in the project, and how to use it.
+## 📑 Table of Contents
+- [Target Architecture](#-target-architecture)
+- [Core Capabilities](#-core-capabilities)
+- [Platform Modules](#-platform-modules)
+- [Sentinel Local Hardware Agent](#-sentinel-local-hardware-agent)
+- [Getting Started](#-getting-started)
+  - [Prerequisites](#prerequisites)
+  - [Local Installation](#local-installation)
+  - [Connecting Your Local Network Hardware](#connecting-your-local-network-hardware)
+- [Conservative Threat Detection Engine](#-conservative-threat-detection-engine)
+- [PCAP Deep Forensics Analyzer](#-pcap-deep-forensics-analyzer)
+- [AI Copilot Telemetry Audit](#-ai-copilot-telemetry-audit)
+- [API & WebSocket Reference](#-api--websocket-reference)
+- [Security & Privacy Framework](#-security--privacy-framework)
+- [License & Disclaimer](#-license--disclaimer)
 
 ---
 
-### 1. tshark (Wireshark Command Line Interface)
-`tshark` is the primary CLI packet dissection tool utilized by the backend server (`server.ts`) to stream live packet data in real-time.
+## 🏗️ Target Architecture
 
-*   **How it is used in the project:** 
-    The Node/Express backend spawns `tshark` as a child process using specific field extractions to pipe tab-separated data into the application for real-time visualization.
-*   **Installation:** 
-    *   **Windows:** Install [Wireshark](https://www.wireshark.org/download.html). Ensure you check the box to add Wireshark to your system PATH during installation.
-    *   **macOS:** Install via Homebrew: `brew install wireshark`
-    *   **Linux (Ubuntu/Debian):** Run `sudo apt-get install tshark` and choose "Yes" to allow non-superuser captures.
+```
+                  USER AUTHORIZED COMPUTER
+                             │
+                             ▼
+                    Wi-Fi / Ethernet NIC
+                             │
+                             ▼
+                  ┌─────────────────────┐
+                  │ Sentinel Local Agent│
+                  │   Python / Scapy    │
+                  │   TShark / Npcap    │
+                  │  Packet Normalizer  │
+                  └──────────┬──────────┘
+                             │
+                      Real-time packet stream
+                      (TLS/WSS JSON Events)
+                             │
+                             ▼
+                  ┌─────────────────────┐
+                  │  Sentinel Backend   │
+                  │  Session Tracking   │
+                  │  Protocol Analysis  │
+                  │  Threat Detection   │
+                  │  DNS & TLS Cache    │
+                  └──────────┬──────────┘
+                             │
+                             ▼
+                  ┌─────────────────────┐
+                  │  Sentinel Analytica │
+                  │  Web UI Dashboard   │
+                  └─────────────────────┘
+```
 
-#### Essential `tshark` Commands:
-*   **List all available network interfaces:**
-    ```bash
-    tshark -D
-    ```
-    *(The backend uses this API at `/api/interfaces` to let you select interfaces from the dashboard.)*
-
-*   **Start a live field-based packet capture (similar to backend engine):**
-    ```bash
-    tshark -i <interface_name_or_index> -l -n -T fields -E separator=\t -e frame.number -e frame.time_epoch -e ip.proto -e ip.src -e ip.dst -e frame.len -e tcp.srcport -e tcp.dstport
-    ```
-
-*   **Capture a fixed number of packets and print summary:**
-    ```bash
-    tshark -i 1 -c 20
-    ```
-
-*   **Capture traffic and save to a pcap file:**
-    ```bash
-    tshark -i 1 -w capture.pcap
-    ```
-
----
-
-### 2. Wireshark (Graphical User Interface)
-Wireshark is the world's foremost network protocol analyzer, used for manual deep-dive analysis of saved packet streams.
-
-*   **How it is used in the project:**
-    Used externally to open and verify standard `.pcap` files or to cross-verify the dashboard's analytics.
-*   **Usage Steps for Accurate Sniffing:**
-    1. Open the Wireshark GUI.
-    2. Double-click the active network interface (e.g., `Wi-Fi` or `Ethernet`) that has network activity.
-    3. Use the **Filter bar** to search for specific traffic:
-        *   Show only HTTP traffic: `http`
-        *   Show a specific IP: `ip.addr == 192.168.1.1`
-        *   Show TCP traffic on port 443 (HTTPS): `tcp.port == 443`
-        *   Show DNS queries: `dns`
-    4. Save captures via `File > Save As` in `.pcap` or `.pcapng` format to load them into external tools.
+> **Zero Cloud Raw Sniffing:** Browsers cannot directly capture hardware NIC packets due to sandboxing. The Sentinel Local Agent captures frames locally on the user's authorized machine, normalizes security metadata, and securely relays events to the central backend.
 
 ---
 
-### 3. Npcap / WinPcap (Windows) & libpcap (macOS/Linux)
-These are system-level packet capture drivers/libraries required to capture raw network traffic from network interfaces.
+## ⚡ Core Capabilities
 
-*   **How it is used in the project:**
-    `tshark` requires these drivers to place network interfaces into **promiscuous mode** (or monitor mode) to read packets.
-*   **Setup/Steps:**
-    *   **Windows:** Automatically installed during the Wireshark installation. Ensure "Npcap" is selected and run with administrator privileges.
-    *   **macOS/Linux:** Native driver libraries (`libpcap`) are already bundled. You may need to run commands with `sudo` permissions or add your user to the `wireshark` group.
-
----
-
-### 4. Scapy (Python Framework)
-*For advanced programmatic sniffing, scripting, and custom analysis modules (highlighted in the technical design specs).*
-
-*   **How to use Scapy for packet sniffing:**
-    1. Ensure Python 3 is installed.
-    2. Install Scapy: `pip install scapy`
-    3. Run a custom sniffing script:
-        ```python
-        from scapy.all import sniff
-
-        # Callback function to process each packet
-        def process_packet(packet):
-            if packet.haslayer('IP'):
-                print(f"[{packet.summary()}] Src: {packet['IP'].src} -> Dst: {packet['IP'].dst}")
-
-        # Sniff 20 packets on the default interface
-        print("Sniffing started...")
-        sniff(prn=process_packet, count=20)
-        ```
+- **🔴 Real-Time Hardware Capture:** Directly bridges Wi-Fi, Ethernet, VPN, and Virtual NICs via Python Scapy and TShark packet engines.
+- **🌐 4-Tuple Flow & Session Tracking:** Dynamic 4-tuple session tracking (`Src IP:Port` $\rightarrow$ `Dst IP:Port`) with live byte volume, packet rates, and direction indicators.
+- **🔍 Deep Packet Inspection (DPI):** Frame-level dissecting across Layer 2 (Ethernet), Layer 3 (IPv4/IPv6/ARP), Layer 4 (TCP/UDP/ICMP), and Application Layers (DNS, TLS SNI, HTTP).
+- **🛡️ Conservative Threat & Anomaly Detection:** Rule-based heuristic engine identifying Potential Port Scans, Abnormal Traffic Bursts, SYN Floods, and Conflicting TCP Flags with verifiable evidence.
+- **🧪 Dual-Mode Operation (Live vs. Demo):** Seamless toggling between authentic hardware monitoring and high-fidelity demo simulation for training and offline evaluations.
+- **📁 Forensic PCAP Analyzer:** Deep analysis of `.pcap` and `.pcapng` files with conversational graphs, protocol distributions, and threat indicator extraction.
+- **🤖 Context-Aware AI Security Copilot:** Powered by LLMs with real-time injection of observed network telemetry, active connections, and security alerts.
 
 ---
 
-### 5. Built-in Real-Time Simulator (Offline Fallback)
-If `tshark` is not installed or the application lacks administrator permission to capture raw sockets, the project automatically falls back to its built-in traffic simulator.
+## 🖥️ Platform Modules
 
-*   **How it works:**
-    Generates realistic, structured TCP, UDP, HTTP, HTTPS, DNS, ICMP, and ARP traffic bursts in memory, allowing you to test and explore the React dashboard, charts, connections tracker, and AI Copilot completely offline and setup-free.
+| Module | Purpose | Key Metrics / Features |
+| :--- | :--- | :--- |
+| **Monitor Dashboard** | Real-time command center | Packets/sec, Throughput Graph, Protocol Distribution, Top Talkers |
+| **Live Traffic Intel** | Connection & DNS cache | 4-Tuple Active Connections, Resolved Domain Queries, Visited HTTPS Sites |
+| **Packet Inspector** | Deep protocol dissection | Hex/ASCII Payloads, Layer Headers, TCP Flags, TTL, Checksums |
+| **Threat Analyzer** | Network anomaly detection | Non-alarmist alert logs, Severity ratings, Actionable mitigation steps |
+| **PCAP Deep Analyzer** | Forensic capture analysis | PCAP/PCAPNG file upload, Session reconstruction, Risk scoring |
+| **AI Copilot Intel** | Automated security assistant | Plain-English explanations, Root cause analysis, Action checklists |
+| **Sniffing Tools** | Educational & audit guides | Native Wireshark, TShark, Npcap, Scapy command references |
 
+---
+
+## 🐍 Sentinel Local Hardware Agent
+
+The platform provides a standalone, zero-setup Python agent (`agent/sentinel_agent.py`) capable of capturing and streaming normalized packet metadata from any authorized computer.
+
+### Features:
+1. **Interface Detection:** Autodetects all physical and virtual network adapters.
+2. **Privacy-Preserving:** Strips sensitive credentials, cookies, and cleartext user payloads; only inspects packet headers and security metadata.
+3. **Resilient Reconnection:** WebSocket channel with exponential backoff on network dropouts.
+4. **Multi-Driver Support:** Compatible with Scapy, Npcap (Windows), libpcap (Linux/macOS), or raw socket fallbacks.
+
+### Quick Start with Python Agent:
+```bash
+# 1. Install prerequisites
+pip install scapy psutil websocket-client
+
+# 2. Run capture agent pointing to your dashboard
+python agent/sentinel_agent.py --server https://sentinel-analytica.onrender.com
+```
+
+### 1-Click Launchers (Available in Dashboard):
+- **Windows:** Download and double-click `Sentinel-Capture-Agent.cmd`
+- **macOS:** Run `Sentinel-Capture-Agent-macOS.command`
+- **Linux:** Run `Sentinel-Capture-Agent-Linux.sh`
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+- **Node.js** (v18.0.0 or higher)
+- **Python** (v3.10 or higher with `pip`)
+- **Npcap / Wireshark** (optional, for raw local packet capture)
+
+### Local Installation
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/Eswar-2006/Advanced-Packet-Sniffer-Network-Analyzer.git
+   cd Advanced-Packet-Sniffer-Network-Analyzer
+   ```
+
+2. **Install frontend and backend dependencies:**
+   ```bash
+   npm install
+   ```
+
+3. **Configure Environment Variables (Optional):**
+   Create a `.env` file in the root directory:
+   ```env
+   PORT=3000
+   GROQ_API_KEY=your_groq_api_key_here
+   GEMINI_API_KEY=your_gemini_api_key_here
+   ```
+
+4. **Start the platform in development mode:**
+   ```bash
+   npm run dev
+   ```
+   *Dashboard opens at `http://localhost:3000` (or `http://localhost:5173`).*
+
+5. **Build for production:**
+   ```bash
+   npm run build
+   npm start
+   ```
+
+---
+
+## 🛡️ Conservative Threat Detection Engine
+
+Unlike simplistic alarms that flag every unusual packet as malicious, Sentinel Analytica employs **evidence-based conservative security rules**:
+
+- **Potential Port Scan:** Triggered when a single source IP contacts $\ge 8$ distinct destination ports in a short sliding window.
+- **Abnormal Traffic Burst:** Detects sustained high-rate spikes ($\ge 60$ frames in rapid succession) from a non-loopback source.
+- **Conflicting TCP Flags:** Alerts on anomalous combinations (e.g. `SYN + FIN` or `NULL` flags) typical of active scanner fingerprinting.
+- **Anomalous DNS Query Length:** Flags oversized DNS resolution payloads ($> 512$ bytes) indicating potential covert C2 channels.
+
+---
+
+## 🔬 Packet Data Normalization Model
+
+All captured packets are normalized into a unified security structure:
+
+```typescript
+interface Packet {
+  id: number;
+  timestamp: string;
+  protocol: 'TCP' | 'UDP' | 'ICMP' | 'HTTPS' | 'DNS' | 'HTTP' | 'ARP' | 'TLS';
+  srcIp: string;
+  dstIp: string;
+  srcPort?: number;
+  dstPort?: number;
+  macSrc: string;
+  macDst: string;
+  size: number;
+  ttl?: number;
+  tcpFlags?: string;
+  direction: 'INCOMING' | 'OUTGOING' | 'LOOPBACK';
+  hostname?: string;
+  service?: string;
+  appProtocol?: string;
+  interface: string;
+  summary: string;
+  payloadHex?: string;
+  payloadAscii?: string;
+}
+```
+
+---
+
+## 📡 API & WebSocket Reference
+
+### REST Endpoints
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/api/status` | Current capture engine status, flow rate, and capture mode (`REAL` vs `SIMULATED`) |
+| `GET` | `/api/packets` | Recent ring buffer packets with throughput statistics |
+| `GET` | `/api/connections` | Active 4-tuple tracked sessions |
+| `GET` | `/api/dns-cache` | Extracted DNS queries and mapped IP resolutions |
+| `GET` | `/api/top-sites` | Extracted HTTPS TLS SNI server names and HTTP hosts |
+| `POST` | `/api/demo-mode/toggle` | Switch between live capture and simulation demo mode |
+| `POST` | `/api/agents/quick-register` | Zero-configuration agent pairing endpoint |
+| `GET` | `/api/download/agent-python` | Download standalone `sentinel_agent.py` script |
+
+### WebSocket Streams
+
+- **Agent Ingestion Channel:** `/ws/agent?agentId=<ID>&agentSecret=<TOKEN>`
+- **Dashboard Live Channel:** `/ws/dashboard` (Broadcasts agent status, interface changes, and capture alerts)
+
+---
+
+## 🔒 Security & Privacy Framework
+
+1. **Explicit Capture Action:** The platform and local agent never sniff network traffic without explicit user initiation.
+2. **Payload Sanitization:** Cleartext passwords, session cookies, and private messages are omitted by default; inspection is restricted to protocol headers.
+3. **Hashed Token Authentication:** Every remote agent connects via unique `AGENT_ID` and cryptographically validated `AGENT_TOKEN`.
+4. **Authorized Monitoring Only:** Built strictly for authorized personal network auditing, cybersecurity education, and defensive analysis.
+
+---
+
+## 📄 License & Disclaimer
+
+This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
+
+> **Disclaimer:** *Sentinel Analytica is intended for authorized network monitoring, defense optimization, and cybersecurity educational research. Always ensure you have explicit permission before monitoring any network or system.*
+
+<div align="center">
+  <sub>Developed by <a href="https://github.com/Eswar-2006">Eswar-2006</a> • Built for Cybersecurity Analysts & Network Engineers</sub>
+</div>
