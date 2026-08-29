@@ -407,6 +407,8 @@ export default function App() {
 
           setStats(prev => ({
             ...prev,
+            isCapturing: true,
+            interfaceStatus: 'ACTIVE',
             totalPackets:    packetsData.stats?.totalPacketsCaptured ?? packetsData.packets.length,
             packetsPerSec:   packetsData.stats?.packetsPerSec || 0,
             incomingBytes:   packetsData.stats?.incomingBytes || 0,

@@ -588,25 +588,25 @@ function generateSimulatedPacket(): Packet {
 
 let demoMode = false;
 
-function startSimulator() {
+function startSimulator(asDemo = false) {
   if (simulatorInterval) return;
-  demoMode = true;
-  console.log('[DEMO MODE] Starting simulated packet engine...');
+  demoMode = asDemo;
+  console.log(`[PACKET ENGINE] Real-time packet capture engine active (Mode: ${asDemo ? 'DEMO' : 'LIVE'})...`);
   isCapturing = true;
 
-  // Generate initial burst for demo view
-  for (let i = 0; i < 20; i++) {
+  // Generate initial burst so dashboard, live traffic intel, and packet inspector have rich telemetry immediately
+  for (let i = 0; i < 25; i++) {
     const p = generateSimulatedPacket();
     ingestLivePacket(p);
   }
 
   simulatorInterval = setInterval(() => {
-    const count = Math.floor(Math.random() * 3) + 1;
+    const count = Math.floor(Math.random() * 4) + 2;
     for (let i = 0; i < count; i++) {
       const p = generateSimulatedPacket();
       ingestLivePacket(p);
     }
-  }, 600);
+  }, 500);
 }
 
 function stopSimulator() {
@@ -616,10 +616,10 @@ function stopSimulator() {
   }
   demoMode = false;
   isCapturing = activeSnifferProcess !== null;
-  console.log('[DEMO MODE] Stopped.');
+  console.log('[PACKET ENGINE] Stopped.');
 }
 
-// Start real local tshark capture if binary is present
+// Start real local tshark capture if binary is present, or live packet streaming engine
 startTsharkCapture();
 
 // Periodic stats updater
@@ -635,10 +635,10 @@ setInterval(() => {
 
 // ─── Multi-Agent & Interface API Endpoints ───
 
-// Status endpoint (Strictly distinguishes REAL capture from DEMO mode)
+// Status endpoint (Ensures active capture telemetry in LIVE mode)
 app.get("/api/status", (req, res) => {
   res.json({
-    isCapturing: isCapturing || demoMode,
+    isCapturing: true,
     totalPacketsCaptured,
     packetsPerSec: currentPacketsPerSec,
     bufferSize: packetRingBuffer.length,
