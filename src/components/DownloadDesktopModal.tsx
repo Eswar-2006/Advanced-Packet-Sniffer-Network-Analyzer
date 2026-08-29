@@ -37,7 +37,7 @@ export const DownloadDesktopModal: React.FC<DownloadDesktopModalProps> = ({
   if (!isOpen) return null;
 
   const agentCommand = `npx tsx agent/index.ts --server ${serverUrl}`;
-  const npmAgentCommand = `npm run start:agent`;
+  const npmAgentCommand = `npm run start:agent -- --server ${serverUrl}`;
 
   const copyToClipboard = (text: string, label: string) => {
     navigator.clipboard.writeText(text);
@@ -266,14 +266,30 @@ export const DownloadDesktopModal: React.FC<DownloadDesktopModalProps> = ({
                   </div>
                 </div>
 
-                <div className="pt-2">
+                <div className="pt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
                   <a
                     href="/api/download/agent-windows"
                     download="Sentinel-Capture-Agent.cmd"
-                    className="w-full py-2 px-3 rounded-lg bg-purple-600/30 hover:bg-purple-600/40 border border-purple-500/50 text-purple-200 font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer"
+                    className="py-2 px-2.5 rounded-lg bg-purple-600/30 hover:bg-purple-600/50 border border-purple-500/50 text-purple-200 font-bold text-[11px] flex items-center justify-center gap-1.5 transition-all cursor-pointer text-center"
                   >
-                    <Download className="w-4 h-4 text-purple-300" />
-                    Download 1-Click Hardware Agent Launcher (.cmd)
+                    <Download className="w-3.5 h-3.5 text-purple-300 shrink-0" />
+                    Windows (.cmd)
+                  </a>
+                  <a
+                    href="/api/download/agent-mac"
+                    download="Sentinel-Capture-Agent-macOS.command"
+                    className="py-2 px-2.5 rounded-lg bg-purple-600/20 hover:bg-purple-600/40 border border-purple-500/40 text-purple-200 font-bold text-[11px] flex items-center justify-center gap-1.5 transition-all cursor-pointer text-center"
+                  >
+                    <Download className="w-3.5 h-3.5 text-purple-300 shrink-0" />
+                    macOS (.command)
+                  </a>
+                  <a
+                    href="/api/download/agent-linux"
+                    download="Sentinel-Capture-Agent-Linux.sh"
+                    className="py-2 px-2.5 rounded-lg bg-purple-600/20 hover:bg-purple-600/40 border border-purple-500/40 text-purple-200 font-bold text-[11px] flex items-center justify-center gap-1.5 transition-all cursor-pointer text-center"
+                  >
+                    <Download className="w-3.5 h-3.5 text-purple-300 shrink-0" />
+                    Linux (.sh)
                   </a>
                 </div>
               </div>

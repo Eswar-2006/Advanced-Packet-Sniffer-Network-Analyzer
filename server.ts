@@ -596,7 +596,62 @@ app.get("/api/status", (req, res) => {
   });
 });
 
+// Helper to determine exact public URL (accounting for Render, reverse proxies, and SSL)
+function getBaseUrl(req: express.Request): string {
+  const forwardedProto = (req.headers['x-forwarded-proto'] as string || '').split(',')[0].trim();
+  const protocol = forwardedProto || (req.secure ? 'https' : req.protocol) || 'http';
+  const host = (req.headers['x-forwarded-host'] as string || '').split(',')[0].trim() || req.get('host') || 'localhost:3000';
+  return `${protocol}://${host}`;
+}
+
 // ─── Sentinel Capture Agent Authentication & Registration API ───
+
+// Ingest remote packet streams from agents into central dashboard ring buffer & stats
+agentManager.onPacket((agentId: string, packet: Packet) => {
+  packetRingBuffer.unshift(packet);
+  if (packetRingBuffer.length > MAX_PACKETS_BUFFER) packetRingBuffer.pop();
+
+  totalPacketsCaptured++;
+  const frameLen = packet.size || 0;
+  if (packet.direction === 'INCOMING') {
+    incomingBytesCount += frameLen;
+  } else {
+    outgoingBytesCount += frameLen;
+  }
+
+  // Update live connection tracker
+  if (packet.srcIp && packet.dstIp) {
+    const connKey = `${packet.srcIp}:${packet.srcPort || 0}-${packet.dstIp}:${packet.dstPort || 0}-${packet.protocol}`;
+    const now = new Date().toISOString();
+    const existing = liveConnections.get(connKey);
+    if (existing) {
+      existing.bytes += frameLen;
+      existing.packets += 1;
+      existing.lastSeen = now;
+      if (packet.hostname) existing.hostname = packet.hostname;
+    } else {
+      if (liveConnections.size >= MAX_CONNECTIONS) {
+        const firstKey = liveConnections.keys().next().value;
+        if (firstKey) liveConnections.delete(firstKey);
+      }
+      liveConnections.set(connKey, {
+        key: connKey,
+        srcIp: packet.srcIp,
+        srcPort: packet.srcPort || 0,
+        dstIp: packet.dstIp,
+        dstPort: packet.dstPort || 0,
+        protocol: packet.protocol,
+        hostname: packet.hostname || packet.dstIp,
+        service: packet.protocol,
+        bytes: frameLen,
+        packets: 1,
+        firstSeen: now,
+        lastSeen: now,
+        direction: packet.direction
+      });
+    }
+  }
+});
 
 // Step 1: Create a secure, one-time registration token for adding a new capture device
 app.post("/api/agents/create", (req, res) => {
@@ -604,7 +659,7 @@ app.post("/api/agents/create", (req, res) => {
   const ownerId = (req.headers["x-user-id"] as string) || "default-user";
 
   const tokenData = agentAuthStore.createRegistrationToken(ownerId, name);
-  const serverBaseUrl = `${req.protocol}://${req.get("host")}`;
+  const serverBaseUrl = getBaseUrl(req);
 
   res.json({
     success: true,
@@ -613,7 +668,7 @@ app.post("/api/agents/create", (req, res) => {
     expiresAt: tokenData.expiresAt,
     expiresInSeconds: tokenData.expiresInSeconds,
     setupCommand: `npm run start:agent -- --token ${tokenData.token} --server ${serverBaseUrl}`,
-    npxCommand: `npx sentinel-agent connect --server ${serverBaseUrl} --token ${tokenData.token}`
+    npxCommand: `npx tsx agent/index.ts --token ${tokenData.token} --server ${serverBaseUrl}`
   });
 });
 
@@ -635,9 +690,37 @@ app.post("/api/agents/register", (req, res) => {
     return res.status(401).json({ success: false, error: result.error });
   }
 
-  const serverBaseUrl = `${req.protocol}://${req.get("host")}`;
-
+  const serverBaseUrl = getBaseUrl(req);
   console.log(`[AgentAuth] Successfully registered agent: ${result.agentName} [ID: ${result.agentId}]`);
+
+  res.json({
+    success: true,
+    agentId: result.agentId,
+    agentSecret: result.agentSecret,
+    agentName: result.agentName,
+    serverUrl: serverBaseUrl
+  });
+});
+
+// Step 3: Quick auto-registration for zero-configuration 1-click remote agent pairing
+app.post("/api/agents/quick-register", (req, res) => {
+  const { deviceName, platform, agentVersion } = req.body || {};
+  const ownerId = (req.headers["x-user-id"] as string) || "default-user";
+
+  const devName = deviceName?.trim() || `Sentinel Capture Node (${platform || os.platform()})`;
+  const tokenData = agentAuthStore.createRegistrationToken(ownerId, devName);
+  const result = agentAuthStore.redeemRegistrationToken(tokenData.token, {
+    deviceName: devName,
+    platform: platform || os.platform(),
+    agentVersion: agentVersion || "2.5.0"
+  });
+
+  if (!result.success) {
+    return res.status(500).json({ success: false, error: result.error });
+  }
+
+  const serverBaseUrl = getBaseUrl(req);
+  console.log(`[AgentAuth] Auto-registered agent node: ${result.agentName} [ID: ${result.agentId}]`);
 
   res.json({
     success: true,
@@ -1512,12 +1595,45 @@ app.get("/api/system-stats", (req, res) => {
   });
 });
 
-// Download Desktop App Executables (Windows .cmd / .exe, macOS .command, Linux .sh, Agent)
+// ─── Desktop App & Hardware Agent Downloads (Dual-Environment Aware) ───
+
+// Endpoint to download standalone agent JavaScript runner
+app.get("/api/download/agent-runner.js", (req, res) => {
+  const runnerPath = path.join(process.cwd(), 'dist', 'agent-runner.cjs');
+  if (fs.existsSync(runnerPath)) {
+    res.setHeader('Content-Type', 'application/javascript');
+    return res.sendFile(runnerPath);
+  }
+  
+  // Dynamic build fallback using esbuild
+  try {
+    const { buildSync } = require('esbuild');
+    buildSync({
+      entryPoints: [path.join(process.cwd(), 'agent', 'index.ts')],
+      bundle: true,
+      platform: 'node',
+      format: 'cjs',
+      packages: 'external',
+      outfile: runnerPath
+    });
+    res.setHeader('Content-Type', 'application/javascript');
+    return res.sendFile(runnerPath);
+  } catch (e) {
+    const tsPath = path.join(process.cwd(), 'agent', 'index.ts');
+    if (fs.existsSync(tsPath)) {
+      res.setHeader('Content-Type', 'text/plain');
+      return res.sendFile(tsPath);
+    }
+    return res.status(404).send('Agent runner file not found');
+  }
+});
+
+// 1. Windows Desktop App Launcher (.cmd / .exe)
 app.get("/api/download/desktop-windows", (req, res) => {
   const buildOutputDir = path.join(process.cwd(), 'build_output');
   const distElectronPath = path.join(process.cwd(), 'dist_electron');
   
-  // 1. Check if electron-builder compiled .exe exists in build_output or dist_electron
+  // Check if electron-builder precompiled .exe exists
   for (const dir of [buildOutputDir, distElectronPath]) {
     if (fs.existsSync(dir)) {
       const files = fs.readdirSync(dir);
@@ -1528,10 +1644,8 @@ app.get("/api/download/desktop-windows", (req, res) => {
     }
   }
 
-  // 2. Generate dynamic smart 1-click Windows Desktop Launcher
-  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
-  const host = req.get('host') || 'localhost:3000';
-  const serverUrl = `${protocol}://${host}`;
+  // Dynamic 1-Click Native Desktop Window Launcher for Windows
+  const serverUrl = getBaseUrl(req);
   const launcherBatPath = path.join(process.cwd(), 'dist', 'Sentinel-Packet-Sniffer-Desktop.cmd');
 
   const batContent = `@echo off
@@ -1543,53 +1657,13 @@ echo ===================================================================
 echo     SENTINEL ANALYTICA - ENTERPRISE PACKET SNIFFER DESKTOP
 echo ===================================================================
 echo.
-echo [*] Initializing Sentinel Desktop Engine...
-echo [*] Live Host: ${serverUrl}
-echo.
-
-set "FOUND_PROJECT="
-
-:: 1. Check if user launched script from within the cloned repository
-if exist "%~dp0package.json" (
-    set "FOUND_PROJECT=%~dp0"
-) else if exist "%~dp0..\\package.json" (
-    set "FOUND_PROJECT=%~dp0.."
-)
-
-:: 2. Check common project repository folders on this machine
-if not defined FOUND_PROJECT (
-    for %%P in (
-        "%USERPROFILE%\\Downloads\\advanced-packet-sniffer"
-        "%USERPROFILE%\\Downloads\\Advanced-Packet-Sniffer-Network-Analyzer"
-        "%USERPROFILE%\\advanced-packet-sniffer"
-        "%USERPROFILE%\\Desktop\\advanced-packet-sniffer"
-        "C:\\Users\\%USERNAME%\\Downloads\\advanced-packet-sniffer"
-    ) do (
-        if not defined FOUND_PROJECT (
-            if exist "%%~P\\package.json" (
-                set "FOUND_PROJECT=%%~P"
-            )
-        )
-    )
-)
-
-:: 3. If local repository with package.json is found, launch Electron directly
-if defined FOUND_PROJECT (
-    echo [+] Local packet sniffer repository detected at: "!FOUND_PROJECT!"
-    echo [+] Spawning native Electron desktop application with local socket bindings...
-    cd /d "!FOUND_PROJECT!"
-    call npm run dev:electron
-    if !errorlevel! equ 0 goto :done
-    call npm run dev
-    if !errorlevel! equ 0 goto :done
-)
-
-:: 4. If standalone from live hosted website (Render), launch standalone Native Desktop Application Window
-echo [!] Launching Sentinel Analytica in Dedicated Native Desktop Window...
+echo [*] Target Host: ${serverUrl}
+echo [*] Spawning dedicated native desktop interface...
 echo.
 
 set "LAUNCHED="
 
+:: 1. Launch in dedicated frameless App Mode via Edge / Chrome / Brave
 for %%E in (
     "%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe"
     "%ProgramFiles%\\Microsoft\\Edge\\Application\\msedge.exe"
@@ -1608,9 +1682,11 @@ for %%E in (
     )
 )
 
+:: 2. Fallback to default browser if no Chromium browser path found
 if not defined LAUNCHED (
-    echo [*] Launching in default web browser...
+    echo [*] Launching application in default browser...
     start "" "${serverUrl}"
+    set "LAUNCHED=1"
 )
 
 echo.
@@ -1619,13 +1695,8 @@ echo  [+] Desktop Application successfully started!
 echo  [+] Live Host: ${serverUrl}
 echo ===================================================================
 echo.
-timeout /t 5 >nul
+timeout /t 3 >nul
 exit /b 0
-
-:done
-echo.
-echo [*] Desktop session closed.
-pause
 `;
 
   try {
@@ -1639,10 +1710,9 @@ pause
   }
 });
 
+// 2. macOS Desktop App Launcher (.command)
 app.get("/api/download/desktop-mac", (req, res) => {
-  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
-  const host = req.get('host') || 'localhost:3000';
-  const serverUrl = `${protocol}://${host}`;
+  const serverUrl = getBaseUrl(req);
   const launcherShPath = path.join(process.cwd(), 'dist', 'Sentinel-Packet-Sniffer-macOS.command');
 
   const shContent = `#!/bin/bash
@@ -1651,23 +1721,18 @@ echo "=================================================="
 echo "  SENTINEL ANALYTICA DESKTOP PACKET SNIFFER (macOS)"
 echo "=================================================="
 echo "Connecting to: $SERVER_URL"
+echo ""
 
-for p in "$PWD" "$PWD/.." "$HOME/Downloads/advanced-packet-sniffer" "$HOME/advanced-packet-sniffer" "$HOME/Desktop/advanced-packet-sniffer"; do
-  if [ -f "$p/package.json" ]; then
-    echo "[*] Found local project repository at $p"
-    cd "$p"
-    npm run dev:electron && exit 0
-  fi
-done
-
-echo "[*] Launching Sentinel Analytica Native Desktop Window..."
 if [ -d "/Applications/Google Chrome.app" ]; then
   open -na "Google Chrome" --args --app="$SERVER_URL"
 elif [ -d "/Applications/Microsoft Edge.app" ]; then
   open -na "Microsoft Edge" --args --app="$SERVER_URL"
+elif [ -d "/Applications/Brave Browser.app" ]; then
+  open -na "Brave Browser" --args --app="$SERVER_URL"
 else
   open "$SERVER_URL"
 fi
+exit 0
 `;
   try {
     if (!fs.existsSync(path.join(process.cwd(), 'dist'))) {
@@ -1681,10 +1746,9 @@ fi
   }
 });
 
+// 3. Linux Desktop App Launcher (.sh)
 app.get("/api/download/desktop-linux", (req, res) => {
-  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
-  const host = req.get('host') || 'localhost:3000';
-  const serverUrl = `${protocol}://${host}`;
+  const serverUrl = getBaseUrl(req);
   const launcherShPath = path.join(process.cwd(), 'dist', 'Sentinel-Packet-Sniffer-Linux.sh');
 
   const shContent = `#!/bin/bash
@@ -1693,23 +1757,18 @@ echo "=================================================="
 echo "  SENTINEL ANALYTICA DESKTOP PACKET SNIFFER (Linux)"
 echo "=================================================="
 echo "Connecting to: $SERVER_URL"
+echo ""
 
-for p in "$PWD" "$PWD/.." "$HOME/Downloads/advanced-packet-sniffer" "$HOME/advanced-packet-sniffer" "$HOME/Desktop/advanced-packet-sniffer"; do
-  if [ -f "$p/package.json" ]; then
-    echo "[*] Found local project repository at $p"
-    cd "$p"
-    npm run dev:electron && exit 0
-  fi
-done
-
-echo "[*] Launching Sentinel Analytica Native Desktop Window..."
 if command -v google-chrome >/dev/null 2>&1; then
   google-chrome --app="$SERVER_URL" &
 elif command -v chromium-browser >/dev/null 2>&1; then
   chromium-browser --app="$SERVER_URL" &
+elif command -v chromium >/dev/null 2>&1; then
+  chromium --app="$SERVER_URL" &
 elif command -v xdg-open >/dev/null 2>&1; then
   xdg-open "$SERVER_URL" &
 fi
+exit 0
 `;
   try {
     if (!fs.existsSync(path.join(process.cwd(), 'dist'))) {
@@ -1723,13 +1782,15 @@ fi
   }
 });
 
+// 4. Windows Hardware Capture Agent Launcher (.cmd)
 app.get("/api/download/agent-windows", (req, res) => {
-  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
-  const host = req.get('host') || 'localhost:3000';
-  const serverUrl = `${protocol}://${host}`;
+  const serverUrl = getBaseUrl(req);
+  const ownerId = (req.headers["x-user-id"] as string) || "default-user";
+  const token = (req.query.token as string) || agentAuthStore.createRegistrationToken(ownerId, "Windows Capture PC").token;
   const agentBatPath = path.join(process.cwd(), 'dist', 'Sentinel-Capture-Agent.cmd');
 
   const batContent = `@echo off
+setlocal enabledelayedexpansion
 title Sentinel Analytica - Local Hardware Capture Agent
 color 0D
 
@@ -1743,33 +1804,50 @@ echo.
 
 set "FOUND_PROJECT="
 if exist "%~dp0package.json" set "FOUND_PROJECT=%~dp0"
+if exist "%~dp0..\\package.json" set "FOUND_PROJECT=%~dp0.."
 if not defined FOUND_PROJECT (
     for %%P in (
         "%USERPROFILE%\\Downloads\\advanced-packet-sniffer"
         "%USERPROFILE%\\Downloads\\Advanced-Packet-Sniffer-Network-Analyzer"
         "%USERPROFILE%\\advanced-packet-sniffer"
         "%USERPROFILE%\\Desktop\\advanced-packet-sniffer"
-        "C:\\Users\\%USERNAME%\\Downloads\\advanced-packet-sniffer"
     ) do (
         if not defined FOUND_PROJECT (
-            if exist "%%~P\\package.json" set "FOUND_PROJECT=%%~P"
+            if exist "%%~P\\agent\\index.ts" set "FOUND_PROJECT=%%~P"
         )
     )
 )
 
 if defined FOUND_PROJECT (
-    echo [+] Using local project at: "!FOUND_PROJECT!"
+    echo [+] Using local project repository at: "!FOUND_PROJECT!"
     cd /d "!FOUND_PROJECT!"
-    call npx tsx agent/index.ts --server ${serverUrl}
+    call npx tsx agent/index.ts --server ${serverUrl} --token ${token}
     if !errorlevel! equ 0 goto :done
 )
 
-echo [*] Starting capture agent via npx...
-npx -y tsx agent/index.ts --server ${serverUrl}
+:: Standalone Agent Execution (for machines without cloned repository)
+echo [*] Initializing standalone hardware capture engine...
+set "AGENT_TEMP_DIR=%TEMP%\\sentinel-capture-agent"
+if not exist "%AGENT_TEMP_DIR%" mkdir "%AGENT_TEMP_DIR%"
+cd /d "%AGENT_TEMP_DIR%"
+
+echo [*] Downloading agent runner from ${serverUrl}...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object System.Net.WebClient).DownloadFile('${serverUrl}/api/download/agent-runner.js', 'agent-runner.cjs') } catch { exit 1 }"
+
+if exist "agent-runner.cjs" (
+    echo [+] Launching Sentinel Capture Agent...
+    call npx -y tsx agent-runner.cjs --server ${serverUrl} --token ${token}
+    if !errorlevel! equ 0 goto :done
+    node agent-runner.cjs --server ${serverUrl} --token ${token}
+    if !errorlevel! equ 0 goto :done
+)
+
+echo [!] Notice: Please ensure Node.js is installed on this PC.
+echo [!] Download Node.js from https://nodejs.org if needed.
 
 :done
 echo.
-echo [*] Agent session ended.
+echo [*] Capture agent session ended.
 pause
 `;
 
@@ -1781,6 +1859,96 @@ pause
     res.download(agentBatPath, 'Sentinel-Capture-Agent.cmd');
   } catch (e) {
     res.status(500).json({ error: "Failed to generate Agent download" });
+  }
+});
+
+// 5. macOS Hardware Capture Agent Launcher (.command)
+app.get("/api/download/agent-mac", (req, res) => {
+  const serverUrl = getBaseUrl(req);
+  const ownerId = (req.headers["x-user-id"] as string) || "default-user";
+  const token = (req.query.token as string) || agentAuthStore.createRegistrationToken(ownerId, "macOS Capture Node").token;
+  const agentShPath = path.join(process.cwd(), 'dist', 'Sentinel-Capture-Agent-macOS.command');
+
+  const shContent = `#!/bin/bash
+SERVER_URL="${serverUrl}"
+TOKEN="${token}"
+echo "=================================================="
+echo "  SENTINEL ANALYTICA - LOCAL HARDWARE AGENT (macOS)"
+echo "=================================================="
+echo "Target Dashboard: $SERVER_URL"
+echo ""
+
+for p in "$PWD" "$PWD/.." "$HOME/Downloads/advanced-packet-sniffer" "$HOME/advanced-packet-sniffer"; do
+  if [ -f "$p/agent/index.ts" ]; then
+    echo "[*] Using local repository at $p"
+    cd "$p"
+    npx tsx agent/index.ts --server "$SERVER_URL" --token "$TOKEN"
+    exit 0
+  fi
+done
+
+TMP_DIR="/tmp/sentinel-capture-agent"
+mkdir -p "$TMP_DIR"
+cd "$TMP_DIR"
+curl -sSL "$SERVER_URL/api/download/agent-runner.js" -o agent-runner.cjs
+if [ -f "agent-runner.cjs" ]; then
+  npx -y tsx agent-runner.cjs --server "$SERVER_URL" --token "$TOKEN" || node agent-runner.cjs --server "$SERVER_URL" --token "$TOKEN"
+fi
+`;
+  try {
+    if (!fs.existsSync(path.join(process.cwd(), 'dist'))) {
+      fs.mkdirSync(path.join(process.cwd(), 'dist'), { recursive: true });
+    }
+    fs.writeFileSync(agentShPath, shContent, 'utf8');
+    fs.chmodSync(agentShPath, '755');
+    res.download(agentShPath, 'Sentinel-Capture-Agent-macOS.command');
+  } catch (e) {
+    res.status(500).json({ error: "Failed to generate macOS Agent download" });
+  }
+});
+
+// 6. Linux Hardware Capture Agent Launcher (.sh)
+app.get("/api/download/agent-linux", (req, res) => {
+  const serverUrl = getBaseUrl(req);
+  const ownerId = (req.headers["x-user-id"] as string) || "default-user";
+  const token = (req.query.token as string) || agentAuthStore.createRegistrationToken(ownerId, "Linux Capture Node").token;
+  const agentShPath = path.join(process.cwd(), 'dist', 'Sentinel-Capture-Agent-Linux.sh');
+
+  const shContent = `#!/bin/bash
+SERVER_URL="${serverUrl}"
+TOKEN="${token}"
+echo "=================================================="
+echo "  SENTINEL ANALYTICA - LOCAL HARDWARE AGENT (Linux)"
+echo "=================================================="
+echo "Target Dashboard: $SERVER_URL"
+echo ""
+
+for p in "$PWD" "$PWD/.." "$HOME/Downloads/advanced-packet-sniffer" "$HOME/advanced-packet-sniffer"; do
+  if [ -f "$p/agent/index.ts" ]; then
+    echo "[*] Using local repository at $p"
+    cd "$p"
+    npx tsx agent/index.ts --server "$SERVER_URL" --token "$TOKEN"
+    exit 0
+  fi
+done
+
+TMP_DIR="/tmp/sentinel-capture-agent"
+mkdir -p "$TMP_DIR"
+cd "$TMP_DIR"
+curl -sSL "$SERVER_URL/api/download/agent-runner.js" -o agent-runner.cjs
+if [ -f "agent-runner.cjs" ]; then
+  npx -y tsx agent-runner.cjs --server "$SERVER_URL" --token "$TOKEN" || node agent-runner.cjs --server "$SERVER_URL" --token "$TOKEN"
+fi
+`;
+  try {
+    if (!fs.existsSync(path.join(process.cwd(), 'dist'))) {
+      fs.mkdirSync(path.join(process.cwd(), 'dist'), { recursive: true });
+    }
+    fs.writeFileSync(agentShPath, shContent, 'utf8');
+    fs.chmodSync(agentShPath, '755');
+    res.download(agentShPath, 'Sentinel-Capture-Agent-Linux.sh');
+  } catch (e) {
+    res.status(500).json({ error: "Failed to generate Linux Agent download" });
   }
 });
 

@@ -10,7 +10,7 @@
     "dev": "tsx server.ts",
     "dev:electron": "electron .",
     "start:agent": "tsx agent/index.ts",
-    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs && esbuild agent/index.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/agent-runner.cjs",
     "build:electron": "npm run build && electron .",
     "package:exe": "npm run build && electron-builder --win portable",
     "start": "node dist/server.cjs",

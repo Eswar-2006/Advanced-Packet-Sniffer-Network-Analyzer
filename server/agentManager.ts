@@ -11,16 +11,23 @@ export interface ConnectedAgent extends AgentInfo {
   revoked?: boolean;
 }
 
+export type PacketCallback = (agentId: string, packet: any) => void;
+
 class AgentManager {
   private agents = new Map<string, ConnectedAgent>();
   private localAgentId = "agent-local";
   private wss: WebSocketServer | null = null;
   private dashboardSockets = new Set<WebSocket>();
+  private packetCallback: PacketCallback | null = null;
 
   constructor() {
     this.initLocalAgent();
     // Heartbeat check interval for remote agents
     setInterval(() => this.checkHeartbeats(), 10000);
+  }
+
+  public onPacket(cb: PacketCallback) {
+    this.packetCallback = cb;
   }
 
   public initLocalAgent(): AgentInfo {
@@ -198,6 +205,14 @@ class AgentManager {
           agent.status = status;
           agent.activeSession = session;
           this.broadcastToDashboards({ type: "AGENT_SESSION_UPDATE", agentId, status, session });
+        }
+        break;
+      }
+
+      case "PACKET_STREAM": {
+        const { agentId, packet } = message;
+        if (packet && this.packetCallback) {
+          this.packetCallback(agentId, packet);
         }
         break;
       }

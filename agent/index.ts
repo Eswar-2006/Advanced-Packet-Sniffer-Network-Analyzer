@@ -141,13 +141,48 @@ async function startAgent() {
         activeAgentSecret = "sentinel_secret_token_123";
         console.log(`[AGENT] Running in Localhost Development Mode (Agent ID: agent-local)`);
       } else {
-        console.error("================================================================================");
-        console.error("  [AGENT ERROR] No registration token or saved credentials found!");
-        console.error("  To connect this machine to your dashboard, run:");
-        console.error(`    npm run start:agent -- --token <ONE_TIME_REGISTRATION_TOKEN> --server ${SERVER_URL}`);
-        console.error("  Generate a one-time token in your dashboard by clicking [+ Add Monitoring Device]");
-        console.error("================================================================================");
-        process.exit(1);
+        // 4. Auto-register with remote backend if no token provided
+        console.log(`[AGENT] Requesting automatic pairing with backend at ${SERVER_URL}...`);
+        try {
+          const autoRes = await fetch(`${SERVER_URL}/api/agents/quick-register`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              deviceName: AGENT_NAME,
+              platform: os.platform(),
+              agentVersion: "2.5.0"
+            })
+          });
+          const autoData = await autoRes.json();
+          if (autoRes.ok && autoData.success) {
+            console.log(`[AGENT SUCCESS] Auto-paired with Sentinel Analytica!`);
+            console.log(`   Agent ID:     ${autoData.agentId}`);
+            console.log(`   Device Name:  ${autoData.agentName}`);
+            activeAgentId = autoData.agentId;
+            activeAgentSecret = autoData.agentSecret;
+            activeName = autoData.agentName;
+            saveConfig({
+              agentId: autoData.agentId,
+              agentSecret: autoData.agentSecret,
+              agentName: autoData.agentName,
+              serverUrl: SERVER_URL,
+              registeredAt: new Date().toISOString()
+            });
+          } else {
+            console.error("================================================================================");
+            console.error("  [AGENT ERROR] Could not auto-register with dashboard: " + (autoData.error || "Unknown"));
+            console.error("  To connect with a specific token, run:");
+            console.error(`    npm run start:agent -- --token <ONE_TIME_REGISTRATION_TOKEN> --server ${SERVER_URL}`);
+            console.error("================================================================================");
+            process.exit(1);
+          }
+        } catch (e: any) {
+          console.error("================================================================================");
+          console.error("  [AGENT ERROR] Could not reach backend server at " + SERVER_URL);
+          console.error("  Reason: " + (e.message || e));
+          console.error("================================================================================");
+          process.exit(1);
+        }
       }
     }
   }
@@ -158,8 +193,10 @@ async function startAgent() {
 function connectWebSocket(agentId: string, agentSecret: string, agentName: string) {
   if (isRevoked) return;
 
-  const wsUrl = `${SERVER_URL.replace(/^http/, "ws")}/ws/agent?agentId=${encodeURIComponent(agentId)}&agentSecret=${encodeURIComponent(agentSecret)}`;
-  console.log(`[AGENT] Connecting & authenticating to ${SERVER_URL.replace(/^http/, "ws")}/ws/agent...`);
+  const wsProto = SERVER_URL.startsWith("https") ? "wss" : "ws";
+  const rawUrl = SERVER_URL.replace(/^https?:\/\//, "");
+  const wsUrl = `${wsProto}://${rawUrl}/ws/agent?agentId=${encodeURIComponent(agentId)}&agentSecret=${encodeURIComponent(agentSecret)}`;
+  console.log(`[AGENT] Connecting & authenticating to ${wsUrl}...`);
 
   ws = new WebSocket(wsUrl);
 
