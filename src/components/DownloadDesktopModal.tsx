@@ -265,6 +265,17 @@ export const DownloadDesktopModal: React.FC<DownloadDesktopModalProps> = ({
                     </button>
                   </div>
                 </div>
+
+                <div className="pt-2">
+                  <a
+                    href="/api/download/agent-windows"
+                    download="Sentinel-Capture-Agent.cmd"
+                    className="w-full py-2 px-3 rounded-lg bg-purple-600/30 hover:bg-purple-600/40 border border-purple-500/50 text-purple-200 font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer"
+                  >
+                    <Download className="w-4 h-4 text-purple-300" />
+                    Download 1-Click Hardware Agent Launcher (.cmd)
+                  </a>
+                </div>
               </div>
 
               {/* Status Indicator */}

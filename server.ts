@@ -1512,7 +1512,7 @@ app.get("/api/system-stats", (req, res) => {
   });
 });
 
-// Download Desktop App Executables (Windows .exe, macOS .dmg, Linux .AppImage)
+// Download Desktop App Executables (Windows .cmd / .exe, macOS .command, Linux .sh, Agent)
 app.get("/api/download/desktop-windows", (req, res) => {
   const buildOutputDir = path.join(process.cwd(), 'build_output');
   const distElectronPath = path.join(process.cwd(), 'dist_electron');
@@ -1528,30 +1528,106 @@ app.get("/api/download/desktop-windows", (req, res) => {
     }
   }
 
-  // 2. Generate an instant 1-click Windows executable launcher script pointing to app directory
-  const projectDir = process.cwd().replace(/\//g, '\\');
+  // 2. Generate dynamic smart 1-click Windows Desktop Launcher
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+  const host = req.get('host') || 'localhost:3000';
+  const serverUrl = `${protocol}://${host}`;
   const launcherBatPath = path.join(process.cwd(), 'dist', 'Sentinel-Packet-Sniffer-Desktop.cmd');
+
   const batContent = `@echo off
-title Sentinel Analytica - Desktop Packet Sniffer
+setlocal enabledelayedexpansion
+title Sentinel Analytica - Enterprise Packet Sniffer Desktop
 color 0B
-echo ==================================================
-echo   SENTINEL ANALYTICA DESKTOP PACKET SNIFFER
-echo ==================================================
-echo Launching native desktop application on your PC...
+
+echo ===================================================================
+echo     SENTINEL ANALYTICA - ENTERPRISE PACKET SNIFFER DESKTOP
+echo ===================================================================
 echo.
-if exist "${projectDir}" (
-  cd /d "${projectDir}"
-) else (
-  cd /d "%~dp0"
+echo [*] Initializing Sentinel Desktop Engine...
+echo [*] Live Host: ${serverUrl}
+echo.
+
+set "FOUND_PROJECT="
+
+:: 1. Check if user launched script from within the cloned repository
+if exist "%~dp0package.json" (
+    set "FOUND_PROJECT=%~dp0"
+) else if exist "%~dp0..\\package.json" (
+    set "FOUND_PROJECT=%~dp0.."
 )
-call npm run dev:electron
-if %ERRORLEVEL% NEQ 0 (
-  echo.
-  echo [!] Launching application interface...
-  call npm run dev
+
+:: 2. Check common project repository folders on this machine
+if not defined FOUND_PROJECT (
+    for %%P in (
+        "%USERPROFILE%\\Downloads\\advanced-packet-sniffer"
+        "%USERPROFILE%\\Downloads\\Advanced-Packet-Sniffer-Network-Analyzer"
+        "%USERPROFILE%\\advanced-packet-sniffer"
+        "%USERPROFILE%\\Desktop\\advanced-packet-sniffer"
+        "C:\\Users\\%USERNAME%\\Downloads\\advanced-packet-sniffer"
+    ) do (
+        if not defined FOUND_PROJECT (
+            if exist "%%~P\\package.json" (
+                set "FOUND_PROJECT=%%~P"
+            )
+        )
+    )
 )
+
+:: 3. If local repository with package.json is found, launch Electron directly
+if defined FOUND_PROJECT (
+    echo [+] Local packet sniffer repository detected at: "!FOUND_PROJECT!"
+    echo [+] Spawning native Electron desktop application with local socket bindings...
+    cd /d "!FOUND_PROJECT!"
+    call npm run dev:electron
+    if !errorlevel! equ 0 goto :done
+    call npm run dev
+    if !errorlevel! equ 0 goto :done
+)
+
+:: 4. If standalone from live hosted website (Render), launch standalone Native Desktop Application Window
+echo [!] Launching Sentinel Analytica in Dedicated Native Desktop Window...
+echo.
+
+set "LAUNCHED="
+
+for %%E in (
+    "%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe"
+    "%ProgramFiles%\\Microsoft\\Edge\\Application\\msedge.exe"
+    "%LocalAppData%\\Microsoft\\Edge\\Application\\msedge.exe"
+    "%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe"
+    "%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe"
+    "%LocalAppData%\\Google\\Chrome\\Application\\chrome.exe"
+    "%ProgramFiles%\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"
+) do (
+    if not defined LAUNCHED (
+        if exist "%%~E" (
+            echo [*] Launching Native App Window via %%~nxE...
+            start "" "%%~E" --app="${serverUrl}" --window-size=1440,900
+            set "LAUNCHED=1"
+        )
+    )
+)
+
+if not defined LAUNCHED (
+    echo [*] Launching in default web browser...
+    start "" "${serverUrl}"
+)
+
+echo.
+echo ===================================================================
+echo  [+] Desktop Application successfully started!
+echo  [+] Live Host: ${serverUrl}
+echo ===================================================================
+echo.
+timeout /t 5 >nul
+exit /b 0
+
+:done
+echo.
+echo [*] Desktop session closed.
 pause
 `;
+
   try {
     if (!fs.existsSync(path.join(process.cwd(), 'dist'))) {
       fs.mkdirSync(path.join(process.cwd(), 'dist'), { recursive: true });
@@ -1564,13 +1640,34 @@ pause
 });
 
 app.get("/api/download/desktop-mac", (req, res) => {
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+  const host = req.get('host') || 'localhost:3000';
+  const serverUrl = `${protocol}://${host}`;
   const launcherShPath = path.join(process.cwd(), 'dist', 'Sentinel-Packet-Sniffer-macOS.command');
+
   const shContent = `#!/bin/bash
+SERVER_URL="${serverUrl}"
 echo "=================================================="
 echo "  SENTINEL ANALYTICA DESKTOP PACKET SNIFFER (macOS)"
 echo "=================================================="
-cd "$(dirname "$0")"
-npm run dev:electron
+echo "Connecting to: $SERVER_URL"
+
+for p in "$PWD" "$PWD/.." "$HOME/Downloads/advanced-packet-sniffer" "$HOME/advanced-packet-sniffer" "$HOME/Desktop/advanced-packet-sniffer"; do
+  if [ -f "$p/package.json" ]; then
+    echo "[*] Found local project repository at $p"
+    cd "$p"
+    npm run dev:electron && exit 0
+  fi
+done
+
+echo "[*] Launching Sentinel Analytica Native Desktop Window..."
+if [ -d "/Applications/Google Chrome.app" ]; then
+  open -na "Google Chrome" --args --app="$SERVER_URL"
+elif [ -d "/Applications/Microsoft Edge.app" ]; then
+  open -na "Microsoft Edge" --args --app="$SERVER_URL"
+else
+  open "$SERVER_URL"
+fi
 `;
   try {
     if (!fs.existsSync(path.join(process.cwd(), 'dist'))) {
@@ -1585,13 +1682,34 @@ npm run dev:electron
 });
 
 app.get("/api/download/desktop-linux", (req, res) => {
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+  const host = req.get('host') || 'localhost:3000';
+  const serverUrl = `${protocol}://${host}`;
   const launcherShPath = path.join(process.cwd(), 'dist', 'Sentinel-Packet-Sniffer-Linux.sh');
+
   const shContent = `#!/bin/bash
+SERVER_URL="${serverUrl}"
 echo "=================================================="
 echo "  SENTINEL ANALYTICA DESKTOP PACKET SNIFFER (Linux)"
 echo "=================================================="
-cd "$(dirname "$0")"
-npm run dev:electron
+echo "Connecting to: $SERVER_URL"
+
+for p in "$PWD" "$PWD/.." "$HOME/Downloads/advanced-packet-sniffer" "$HOME/advanced-packet-sniffer" "$HOME/Desktop/advanced-packet-sniffer"; do
+  if [ -f "$p/package.json" ]; then
+    echo "[*] Found local project repository at $p"
+    cd "$p"
+    npm run dev:electron && exit 0
+  fi
+done
+
+echo "[*] Launching Sentinel Analytica Native Desktop Window..."
+if command -v google-chrome >/dev/null 2>&1; then
+  google-chrome --app="$SERVER_URL" &
+elif command -v chromium-browser >/dev/null 2>&1; then
+  chromium-browser --app="$SERVER_URL" &
+elif command -v xdg-open >/dev/null 2>&1; then
+  xdg-open "$SERVER_URL" &
+fi
 `;
   try {
     if (!fs.existsSync(path.join(process.cwd(), 'dist'))) {
@@ -1602,6 +1720,67 @@ npm run dev:electron
     res.download(launcherShPath, 'Sentinel-Packet-Sniffer-Linux.sh');
   } catch (e) {
     res.status(500).json({ error: "Failed to generate Linux download" });
+  }
+});
+
+app.get("/api/download/agent-windows", (req, res) => {
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+  const host = req.get('host') || 'localhost:3000';
+  const serverUrl = `${protocol}://${host}`;
+  const agentBatPath = path.join(process.cwd(), 'dist', 'Sentinel-Capture-Agent.cmd');
+
+  const batContent = `@echo off
+title Sentinel Analytica - Local Hardware Capture Agent
+color 0D
+
+echo ===================================================================
+echo     SENTINEL ANALYTICA - LOCAL HARDWARE CAPTURE AGENT
+echo ===================================================================
+echo.
+echo [*] Target Web Dashboard: ${serverUrl}
+echo [*] Bridging your physical Wi-Fi and Ethernet hardware cards...
+echo.
+
+set "FOUND_PROJECT="
+if exist "%~dp0package.json" set "FOUND_PROJECT=%~dp0"
+if not defined FOUND_PROJECT (
+    for %%P in (
+        "%USERPROFILE%\\Downloads\\advanced-packet-sniffer"
+        "%USERPROFILE%\\Downloads\\Advanced-Packet-Sniffer-Network-Analyzer"
+        "%USERPROFILE%\\advanced-packet-sniffer"
+        "%USERPROFILE%\\Desktop\\advanced-packet-sniffer"
+        "C:\\Users\\%USERNAME%\\Downloads\\advanced-packet-sniffer"
+    ) do (
+        if not defined FOUND_PROJECT (
+            if exist "%%~P\\package.json" set "FOUND_PROJECT=%%~P"
+        )
+    )
+)
+
+if defined FOUND_PROJECT (
+    echo [+] Using local project at: "!FOUND_PROJECT!"
+    cd /d "!FOUND_PROJECT!"
+    call npx tsx agent/index.ts --server ${serverUrl}
+    if !errorlevel! equ 0 goto :done
+)
+
+echo [*] Starting capture agent via npx...
+npx -y tsx agent/index.ts --server ${serverUrl}
+
+:done
+echo.
+echo [*] Agent session ended.
+pause
+`;
+
+  try {
+    if (!fs.existsSync(path.join(process.cwd(), 'dist'))) {
+      fs.mkdirSync(path.join(process.cwd(), 'dist'), { recursive: true });
+    }
+    fs.writeFileSync(agentBatPath, batContent, 'utf8');
+    res.download(agentBatPath, 'Sentinel-Capture-Agent.cmd');
+  } catch (e) {
+    res.status(500).json({ error: "Failed to generate Agent download" });
   }
 });
 
